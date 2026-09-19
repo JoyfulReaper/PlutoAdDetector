@@ -47,6 +47,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     Directory.CreateDirectory(options.CaptureDirectory);
     var browserProfileDirectory = Path.GetFullPath("browser-profile");
     Directory.CreateDirectory(browserProfileDirectory);
+    await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(options.YoutubeUrl);
 
     using var playwright = await Playwright.CreateAsync();
     var chromeExecutable = FindInstalledGoogleChrome();
@@ -75,11 +76,15 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     });
 
     var youtubePage = await context.NewPageAsync();
-    await youtubePage.GotoAsync(options.YoutubeUrl, new PageGotoOptions
+    await youtubePage.GotoAsync(youtubePlayerHost.Url.AbsoluteUri, new PageGotoOptions
     {
         WaitUntil = WaitUntilState.DOMContentLoaded,
         Timeout = 90_000
     });
+    await youtubePage.WaitForFunctionAsync(
+        "() => window.youtubePlayerControls?.isReady() === true",
+        null,
+        new PageWaitForFunctionOptions { Timeout = 60_000 });
     await PauseYoutubeAsync(youtubePage);
     await plutoPage.BringToFrontAsync();
 
@@ -186,23 +191,10 @@ static async Task PauseYoutubeAsync(IPage page)
     var json = await page.EvaluateAsync<string>(
         """
         () => {
-          const video = document.querySelector('video');
-          if (!video) {
-            return JSON.stringify({ success: false, error: 'YouTube video element was not found.' });
-          }
-
-          try {
-            video.pause();
-            return JSON.stringify({
-              success: video.paused,
-              error: video.paused ? null : 'The video did not enter the paused state.'
-            });
-          } catch (error) {
-            return JSON.stringify({
-              success: false,
-              error: `${error?.name || 'Error'}: ${error?.message || String(error)}`
-            });
-          }
+          const controls = window.youtubePlayerControls;
+          return JSON.stringify(controls
+            ? controls.pause()
+            : { success: false, error: 'Local YouTube player controls are unavailable.' });
         }
         """);
     var result = JsonSerializer.Deserialize<YoutubeControlResult>(json, JsonOptions.Instance);
@@ -215,25 +207,11 @@ static async Task<bool> ResumeYoutubeAsync(IPage page)
 {
     var json = await page.EvaluateAsync<string>(
         """
-        async () => {
-          const video = document.querySelector('video');
-          if (!video) {
-            return JSON.stringify({ success: false, error: 'YouTube video element was not found.' });
-          }
-
-          video.muted = false;
-          try {
-            await video.play();
-            return JSON.stringify({
-              success: !video.paused,
-              error: !video.paused ? null : 'The video remained paused after play() completed.'
-            });
-          } catch (error) {
-            return JSON.stringify({
-              success: false,
-              error: `${error?.name || 'Error'}: ${error?.message || String(error)}`
-            });
-          }
+        () => {
+          const controls = window.youtubePlayerControls;
+          return JSON.stringify(controls
+            ? controls.play()
+            : { success: false, error: 'Local YouTube player controls are unavailable.' });
         }
         """);
     var result = JsonSerializer.Deserialize<YoutubeControlResult>(json, JsonOptions.Instance);
@@ -248,39 +226,10 @@ static async Task<string?> DetectYoutubeErrorAsync(IPage page)
     return await page.EvaluateAsync<string?>(
         """
         () => {
-          const video = document.querySelector('video');
-          if (video?.error) {
-            const names = {
-              1: 'MEDIA_ERR_ABORTED',
-              2: 'MEDIA_ERR_NETWORK',
-              3: 'MEDIA_ERR_DECODE',
-              4: 'MEDIA_ERR_SRC_NOT_SUPPORTED'
-            };
-            const name = names[video.error.code] || `MEDIA_ERR_${video.error.code}`;
-            return `${name}: ${video.error.message || 'No media error message was provided.'}`;
-          }
-
-          const selectors = [
-            '.ytp-error-content-wrap-reason',
-            '.ytp-error-content-wrap-subreason',
-            '.ytp-error-content-wrap',
-            '.ytp-error'
-          ];
-          for (const selector of selectors) {
-            const element = document.querySelector(selector);
-            if (!element) continue;
-            const style = getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            const visible = style.display !== 'none' && style.visibility !== 'hidden' &&
-                            Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
-            const message = (element.innerText || element.textContent || '').trim().replace(/\s+/g, ' ');
-            if (visible && message) return message;
-          }
-
-          const player = document.querySelector('#movie_player');
-          return player?.classList.contains('ytp-error')
-            ? 'YouTube player entered an error state.'
-            : null;
+          const controls = window.youtubePlayerControls;
+          return controls
+            ? controls.getError()
+            : 'Local YouTube player controls are unavailable.';
         }
         """);
 }
@@ -491,6 +440,7 @@ internal sealed record DetectorOptions(
         {
             throw new ArgumentException("--youtube-url must be an absolute HTTP or HTTPS URL.");
         }
+        _ = LocalYoutubePlayerHost.GetVideoId(youtubeUrl);
 
         return new DetectorOptions(
             url,
