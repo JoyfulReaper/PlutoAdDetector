@@ -142,21 +142,63 @@ static async Task SetPlutoMutedAsync(IPage page, bool muted)
 
 static async Task PauseYoutubeAsync(IPage page)
 {
-    await page.EvaluateAsync(
-        "() => document.querySelectorAll('video').forEach(video => video.pause())");
+    var json = await page.EvaluateAsync<string>(
+        """
+        () => {
+          const video = document.querySelector('video');
+          if (!video) {
+            return JSON.stringify({ success: false, error: 'YouTube video element was not found.' });
+          }
+
+          try {
+            video.pause();
+            return JSON.stringify({
+              success: video.paused,
+              error: video.paused ? null : 'The video did not enter the paused state.'
+            });
+          } catch (error) {
+            return JSON.stringify({
+              success: false,
+              error: `${error?.name || 'Error'}: ${error?.message || String(error)}`
+            });
+          }
+        }
+        """);
+    var result = JsonSerializer.Deserialize<YoutubeControlResult>(json, JsonOptions.Instance);
+    Console.Error.WriteLine(result?.Success is true
+        ? "youtube paused"
+        : $"youtube pause failed: {result?.Error ?? "Unknown error."}");
 }
 
 static async Task ResumeYoutubeAsync(IPage page)
 {
-    await page.EvaluateAsync(
+    var json = await page.EvaluateAsync<string>(
         """
         async () => {
           const video = document.querySelector('video');
-          if (!video) return;
+          if (!video) {
+            return JSON.stringify({ success: false, error: 'YouTube video element was not found.' });
+          }
+
           video.muted = false;
-          try { await video.play(); } catch { }
+          try {
+            await video.play();
+            return JSON.stringify({
+              success: !video.paused,
+              error: !video.paused ? null : 'The video remained paused after play() completed.'
+            });
+          } catch (error) {
+            return JSON.stringify({
+              success: false,
+              error: `${error?.name || 'Error'}: ${error?.message || String(error)}`
+            });
+          }
         }
         """);
+    var result = JsonSerializer.Deserialize<YoutubeControlResult>(json, JsonOptions.Instance);
+    Console.Error.WriteLine(result?.Success is true
+        ? "youtube resumed"
+        : $"youtube resume failed: {result?.Error ?? "Unknown error."}");
 }
 
 static async Task<DetectionSample> DetectAsync(IPage page)
@@ -264,6 +306,8 @@ internal sealed record DetectionSample(
     float Y,
     float Width,
     float Height);
+
+internal sealed record YoutubeControlResult(bool Success, string? Error);
 
 internal static class JsonOptions
 {
