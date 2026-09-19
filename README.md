@@ -112,6 +112,16 @@ refresh behavior afterward.
 Single-video mode does not read or write this file. Save and restore failures are
 logged and do not stop shutdown or normal application startup.
 
+## Learned visual training
+
+Press `T` while the source tab has focus to record about six seconds from the
+visible source player's full bounds. Frames are normalized in memory and saved as
+compact 64-bit perceptual fingerprints in `visual-signatures.json`; training does
+not save the screenshots themselves. Only one training session runs at a time.
+
+Learned signatures are persisted for future matching, but they are not yet used
+for ad detection or source switching.
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -119,11 +129,13 @@ logged and do not stop shutdown or normal application startup.
 | `N` | Skip the current automatic-queue video, mark it completed for this run, and select the next video. Unavailable in single-video mode. |
 | `P` | Toggle ad tracking. Pausing also pauses YouTube, foregrounds/unmutes the source, and suppresses switching while the detector loop stays alive. Resuming clears debounce state and samples fresh. |
 | `R` | Reload `youtube-queue.json` in automatic mode. Allowed only while tracking is paused or YouTube is foregrounded. The restored video keeps the player's current playing/paused state. |
+| `T` | Teach a visual signature from a short sequence of the source player's full bounds. Available while the source tab has focus. |
 | `H` or `?` | Briefly show keyboard help over the local YouTube page. |
 
 `N`, `R`, and help work from the local player page, including when focus is inside
-the YouTube iframe. `P` works from either browser tab. Queue refreshes continue
-while ad tracking is paused; pausing tracking does not clear or reorder the queue.
+the YouTube iframe. `P` works from either browser tab, while `T` is source-tab
+specific. Queue refreshes continue while ad tracking is paused; pausing tracking
+does not clear or reorder the queue.
 
 ## Detection and source switching
 

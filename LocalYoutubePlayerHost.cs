@@ -190,6 +190,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                 <div>N = next video</div>
                 <div>P = pause/resume ad tracking</div>
                 <div>R = reload saved queue</div>
+                <div>T = teach source visual (source tab)</div>
               </div>
               <script>
                 const candidates = {{candidatesJson}};

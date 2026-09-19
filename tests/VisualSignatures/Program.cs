@@ -10,6 +10,15 @@ try
     Equal(0, missing.Signatures.Count);
     Equal(0, missing.Warnings.Count);
 
+    var descending = Enumerable.Range(0, VisualFingerprint.NormalizedHeight)
+        .SelectMany(_ => Enumerable.Range(0, VisualFingerprint.NormalizedWidth).Select(x => 255 - x))
+        .ToArray();
+    var ascending = Enumerable.Range(0, VisualFingerprint.NormalizedHeight)
+        .SelectMany(_ => Enumerable.Range(0, VisualFingerprint.NormalizedWidth))
+        .ToArray();
+    Equal("FFFFFFFFFFFFFFFF", VisualFingerprint.CreateDHash64(descending));
+    Equal("0000000000000000", VisualFingerprint.CreateDHash64(ascending));
+
     var createdAt = new DateTimeOffset(2026, 9, 19, 12, 34, 56, TimeSpan.Zero);
     var first = Signature("11111111-1111-1111-1111-111111111111", " Test signature ", createdAt,
         "0123456789abcdef", "fedcba9876543210");

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
 
 internal sealed record LearnedVisualSignature(
     string Id,
@@ -20,6 +21,34 @@ internal sealed record VisualSignatureLoadResult(
     IReadOnlyList<string> Warnings);
 
 internal sealed record VisualSignatureSaveResult(bool Success, int SavedCount, string? Error);
+
+internal static class VisualFingerprint
+{
+    internal const int NormalizedWidth = 9;
+    internal const int NormalizedHeight = 8;
+
+    internal static string CreateDHash64(IReadOnlyList<int> normalizedLuminance)
+    {
+        if (normalizedLuminance.Count != NormalizedWidth * NormalizedHeight)
+            throw new ArgumentException("A dHash frame must contain exactly 72 normalized luminance samples.", nameof(normalizedLuminance));
+
+        ulong fingerprint = 0;
+        for (var y = 0; y < NormalizedHeight; y++)
+        {
+            for (var x = 0; x < NormalizedWidth - 1; x++)
+            {
+                fingerprint <<= 1;
+                if (normalizedLuminance[(y * NormalizedWidth) + x] >
+                    normalizedLuminance[(y * NormalizedWidth) + x + 1])
+                {
+                    fingerprint |= 1;
+                }
+            }
+        }
+
+        return fingerprint.ToString("X16", CultureInfo.InvariantCulture);
+    }
+}
 
 internal sealed class VisualSignatureStore
 {

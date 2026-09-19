@@ -56,7 +56,9 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 {
     Directory.CreateDirectory(options.CaptureDirectory);
     var visualSignaturePath = Path.GetFullPath(VisualSignatureStore.DefaultFileName);
-    var visualSignatureLoad = new VisualSignatureStore(visualSignaturePath).Load();
+    var visualSignatureStore = new VisualSignatureStore(visualSignaturePath);
+    var visualSignatureLoad = visualSignatureStore.Load();
+    var learnedVisualSignatures = visualSignatureLoad.Signatures.ToList();
     foreach (var warning in visualSignatureLoad.Warnings)
         Console.Error.WriteLine($"visual signatures: {warning}");
     if (visualSignatureLoad.Signatures.Count > 0)
@@ -130,6 +132,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 
     var trackingToggleRequests = 0;
     var queueRestoreRequests = 0;
+    var visualTrainingRequests = 0;
     await context.ExposeFunctionAsync("requestAdTrackingToggle", () =>
     {
         Interlocked.Increment(ref trackingToggleRequests);
@@ -137,6 +140,10 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     await context.AddInitScriptAsync(script: AdTrackingShortcut.Script);
 
     var sourcePage = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
+    await sourcePage.ExposeFunctionAsync("requestVisualSignatureTraining", () =>
+    {
+        Interlocked.Increment(ref visualTrainingRequests);
+    });
     await sourcePage.GotoAsync(options.SourceUrl, new PageGotoOptions
     {
         WaitUntil = WaitUntilState.DOMContentLoaded,
@@ -184,11 +191,65 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     Task<YoutubeDiscovery>? feedRefresh = null;
     using var feedRefreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     var trackingPaused = false;
+    Task<VisualSignatureTrainingResult>? visualTraining = null;
 
     try
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (visualTraining?.IsCompleted is true)
+            {
+                try
+                {
+                    var result = await visualTraining;
+                    if (result.Signature is null)
+                    {
+                        Console.Error.WriteLine(
+                            $"visual training failed: {result.Error ?? "unknown error"} ({result.UsableSamples} usable samples)");
+                    }
+                    else
+                    {
+                        learnedVisualSignatures.Add(result.Signature);
+                        var saveResult = visualSignatureStore.Save(learnedVisualSignatures);
+                        if (saveResult.Success)
+                        {
+                            Console.WriteLine($"visual training completed: {result.UsableSamples} usable samples");
+                            Console.WriteLine($"visual signature generated: {result.Signature.Name} [{result.Signature.Id}]");
+                        }
+                        else
+                        {
+                            learnedVisualSignatures.Remove(result.Signature);
+                            Console.Error.WriteLine($"visual training failed: could not save signature: {saveResult.Error}");
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                }
+                catch (Exception exception)
+                {
+                    Console.Error.WriteLine($"visual training failed: {exception.Message}");
+                }
+                finally
+                {
+                    visualTraining = null;
+                }
+            }
+
+            if (Interlocked.Exchange(ref visualTrainingRequests, 0) > 0)
+            {
+                if (visualTraining is not null)
+                {
+                    Console.Error.WriteLine("visual training already active; request ignored");
+                }
+                else
+                {
+                    Console.WriteLine(
+                        $"visual training started: {VisualSignatureTrainer.TrainingDurationMilliseconds / 1000.0:0.#} seconds at {VisualSignatureTrainer.SampleIntervalMilliseconds} ms intervals");
+                    visualTraining = VisualSignatureTrainer.TrainAsync(sourcePage, cancellationToken);
+                }
+            }
+
             if (feedRefresh?.IsCompleted is true)
             {
                 try
@@ -384,6 +445,20 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     finally
     {
         await feedRefreshCancellation.CancelAsync();
+        if (visualTraining is not null)
+        {
+            try
+            {
+                await visualTraining;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"visual training cleanup failed: {exception.Message}");
+            }
+        }
         if (feedRefresh is not null)
         {
             try

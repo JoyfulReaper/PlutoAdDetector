@@ -9,6 +9,14 @@ internal static class AdTrackingShortcut
             if (event.code === 'KeyP') {
               event.preventDefault();
               globalThis.requestAdTrackingToggle();
+            } else if (event.code === 'KeyT') {
+              if (typeof globalThis.requestVisualSignatureTraining === 'function') {
+                event.preventDefault();
+                globalThis.requestVisualSignatureTraining();
+              } else if (globalThis.top !== globalThis) {
+                event.preventDefault();
+                globalThis.top.postMessage('pluto-ad-detector:train-visual-signature', '*');
+              }
             } else if (event.code === 'KeyN' && globalThis.top !== globalThis) {
               event.preventDefault();
               globalThis.top.postMessage('pluto-ad-detector:skip-youtube-video', '*');
@@ -20,6 +28,13 @@ internal static class AdTrackingShortcut
               globalThis.top.postMessage('pluto-ad-detector:reload-youtube-queue', '*');
             }
           }, true);
+          globalThis.addEventListener('message', event => {
+            if (globalThis.top === globalThis &&
+                event.data === 'pluto-ad-detector:train-visual-signature' &&
+                typeof globalThis.requestVisualSignatureTraining === 'function') {
+              globalThis.requestVisualSignatureTraining();
+            }
+          });
         })();
         """;
 }

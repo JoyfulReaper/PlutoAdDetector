@@ -4,7 +4,9 @@ const assert = require('node:assert/strict');
 const item = (id, published = 1) => ({ id, title: `Title ${id}`, published: new Date(published * 1000).toISOString() });
 const candidates = [item('short', 10), { ...item('live', 9), automaticSkipReason: 'currently live stream' },
   item('boundary', 8), item('error', 7), item('long', 6)];
-const script = fs.readFileSync('LocalYoutubePlayerHost.cs', 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1]
+const hostSource = fs.readFileSync('LocalYoutubePlayerHost.cs', 'utf8');
+assert(hostSource.includes('T = teach source visual (source tab)'));
+const script = hostSource.match(/<script>([\s\S]*?)<\/script>/)[1]
   .replace('{{candidatesJson}}', JSON.stringify(candidates)).replace('{{minimumDurationSeconds}}', '300')
   .replace('{{JsonSerializer.Serialize(singleVideoId)}}', 'null')
   .replace('{{restoredQueueStateJson}}', 'null');
