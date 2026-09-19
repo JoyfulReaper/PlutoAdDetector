@@ -128,6 +128,72 @@ foreach (var rssResponse in new[]
         throw new Exception("Fallback did not request the channel /videos page.");
 }
 
+var rssTimeoutHandler = new FakeHandler((request, _) =>
+    request.RequestUri!.AbsolutePath.Contains("feeds/videos.xml")
+        ? Task.FromException<HttpResponseMessage>(new TaskCanceledException("simulated RSS timeout"))
+        : Task.FromResult(FakeHandler.Text(videosHtml)));
+var timeoutFallback = await YoutubeFeed.FetchAsync(
+    "https://www.youtube.com/@MeidasTouch",
+    new HttpClient(rssTimeoutHandler),
+    CancellationToken.None);
+Equal("channel-page fallback", timeoutFallback.Source);
+if (rssTimeoutHandler.Urls.Count != 2 || !rssTimeoutHandler.Urls[1].EndsWith("/@MeidasTouch/videos"))
+    throw new Exception("An RSS timeout should fall back to the channel videos page.");
+
+var metadataTimeoutHandler = new FakeHandler((request, _) =>
+    request.RequestUri!.AbsolutePath.Contains("feeds/videos.xml")
+        ? Task.FromResult(FakeHandler.Text(rssXml))
+        : Task.FromException<HttpResponseMessage>(new TaskCanceledException("simulated metadata timeout")));
+var rssWithoutMetadata = await YoutubeFeed.FetchAsync(
+    "https://www.youtube.com/@MeidasTouch",
+    new HttpClient(metadataTimeoutHandler),
+    CancellationToken.None);
+Equal("RSS", rssWithoutMetadata.Source);
+if (rssWithoutMetadata.Uploads.Length != 3)
+    throw new Exception("A metadata timeout should retain all RSS uploads.");
+
+var resolutionTimeoutHandler = new FakeHandler((request, _) =>
+    request.RequestUri!.AbsolutePath.EndsWith("/videos")
+        ? Task.FromResult(FakeHandler.Text(videosHtml))
+        : Task.FromException<HttpResponseMessage>(new TaskCanceledException("simulated channel resolution timeout")));
+var resolutionTimeoutFallback = await YoutubeFeed.FetchAsync(
+    "https://www.youtube.com/@OtherChannel",
+    new HttpClient(resolutionTimeoutHandler),
+    CancellationToken.None);
+Equal("channel-page fallback", resolutionTimeoutFallback.Source);
+
+try
+{
+    var finalTimeoutHandler = new FakeHandler((request, _) =>
+        request.RequestUri!.AbsolutePath.Contains("feeds/videos.xml")
+            ? Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound))
+            : Task.FromException<HttpResponseMessage>(new TaskCanceledException("simulated fallback timeout")));
+    await YoutubeFeed.FetchAsync(
+        "https://www.youtube.com/@MeidasTouch",
+        new HttpClient(finalTimeoutHandler),
+        CancellationToken.None);
+    throw new Exception("A final channel-page timeout should be reported as a discovery failure.");
+}
+catch (HttpRequestException exception) when (exception.Message.Contains("simulated fallback timeout"))
+{
+}
+
+using (var callerCancellation = new CancellationTokenSource())
+{
+    callerCancellation.Cancel();
+    try
+    {
+        await YoutubeFeed.FetchAsync(
+            "https://www.youtube.com/@MeidasTouch",
+            new HttpClient(new FakeHandler(_ => FakeHandler.Text(rssXml))),
+            callerCancellation.Token);
+        throw new Exception("Caller cancellation should propagate.");
+    }
+    catch (OperationCanceledException) when (callerCancellation.IsCancellationRequested)
+    {
+    }
+}
+
 try
 {
     var failedHandler = new FakeHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
@@ -138,16 +204,28 @@ catch (HttpRequestException exception) when (exception.Message.Contains("YouTube
 {
 }
 
-Console.WriteLine("PASS: channel IDs, video order/titles, live/upcoming/stream/premiere classification, RSS enrichment, fallback, and total failure");
+Console.WriteLine("PASS: channel IDs, video order/titles, live filtering, RSS enrichment/fallback, timeout handling, caller cancellation, and total failure");
 
-internal sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
+internal sealed class FakeHandler : HttpMessageHandler
 {
+    private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _response;
+
+    internal FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> response)
+        : this((request, _) => Task.FromResult(response(request)))
+    {
+    }
+
+    internal FakeHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> response)
+    {
+        _response = response;
+    }
+
     internal List<string> Urls { get; } = [];
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Urls.Add(request.RequestUri!.AbsoluteUri);
-        return Task.FromResult(response(request));
+        return _response(request, cancellationToken);
     }
 
     internal static HttpResponseMessage Text(string value) => new(System.Net.HttpStatusCode.OK)

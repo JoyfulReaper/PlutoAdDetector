@@ -41,8 +41,9 @@ internal static class YoutubeFeed
                         $"Could not resolve YouTube channel ID from {channelUrl} " +
                         "(canonical URL, externalId, channel_id, channelId).");
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            catch (Exception exception)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 rssFailure = exception;
                 Console.Error.WriteLine($"youtube RSS unavailable: channel resolution failed: {exception.Message}");
             }
@@ -67,8 +68,9 @@ internal static class YoutubeFeed
                 Console.Error.WriteLine($"youtube discovery: RSS ({uploads.Length} uploads)");
                 return new YoutubeDiscovery(uploads, "RSS");
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            catch (Exception exception)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 rssFailure = exception;
                 Console.Error.WriteLine($"youtube RSS failed; trying channel page: {exception.Message}");
             }
@@ -85,8 +87,9 @@ internal static class YoutubeFeed
             Console.Error.WriteLine($"youtube discovery: channel-page fallback ({uploads.Length} uploads)");
             return new YoutubeDiscovery(uploads, "channel-page fallback");
         }
-        catch (Exception pageFailure) when (pageFailure is not OperationCanceledException)
+        catch (Exception pageFailure)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             throw new HttpRequestException(
                 $"YouTube discovery failed. RSS: {rssFailure?.Message ?? "unavailable"}; " +
                 $"channel page {videosUrl}: {pageFailure.Message}",
@@ -159,8 +162,9 @@ internal static class YoutubeFeed
                     : video)
                 .ToArray();
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             // RSS remains usable when optional state enrichment is unavailable.
             Console.Error.WriteLine($"youtube channel metadata unavailable; using RSS candidates: {exception.Message}");
             return rssUploads;
@@ -186,6 +190,7 @@ internal static class YoutubeFeed
         string url,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         using var response = await client.GetAsync(url, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException(
