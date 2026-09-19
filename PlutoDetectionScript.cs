@@ -4,6 +4,14 @@ internal static class PlutoDetectionScript
         mode => {
           const visible = (element, rect) => {
             if (!rect || rect.width < 1 || rect.height < 1) return false;
+            if (typeof element.checkVisibility === 'function' &&
+                !element.checkVisibility({
+                  checkOpacity: true,
+                  opacityProperty: true,
+                  checkVisibilityCSS: true,
+                  visibilityProperty: true,
+                  contentVisibilityAuto: true
+                })) return false;
             const style = getComputedStyle(element);
             return style.display !== 'none' && style.visibility !== 'hidden' &&
                    Number(style.opacity || 1) > 0;

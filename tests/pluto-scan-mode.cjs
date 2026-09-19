@@ -25,6 +25,15 @@ const enormousWrapper = element(rect(0, 0, 1200, 800), {
   parentElement: body,
   innerText: 'Advertisement'
 });
+let hiddenVisibilityOptions;
+const hiddenByAncestorAd = element(rect(8, 8, 90, 24), {
+  parentElement: container,
+  innerText: 'Advertisement',
+  checkVisibility: options => {
+    hiddenVisibilityOptions = options;
+    return false;
+  }
+});
 const unrelated = Array.from({ length: 100 }, (_, index) =>
   element(rect(700, 400 + index, 10, 10), { parentElement: body, innerText: 'ordinary page text' }));
 let semanticCandidates = [ad];
@@ -83,11 +92,23 @@ allCandidates = [enormousWrapper];
 const fullWrapperOnly = JSON.parse(detector('full'));
 assert.equal(fullWrapperOnly.isAd, false, 'Full mode must ignore enormous application-wide wrappers.');
 
+semanticCandidates = [hiddenByAncestorAd];
+allCandidates = [hiddenByAncestorAd];
+const focusedHiddenAncestor = JSON.parse(detector('focused'));
+const fullHiddenAncestor = JSON.parse(detector('full'));
+assert.equal(focusedHiddenAncestor.isAd, false, 'Focused mode must ignore an indicator hidden by an ancestor.');
+assert.equal(fullHiddenAncestor.isAd, false, 'Full mode must ignore an indicator hidden by an ancestor.');
+assert.equal(hiddenVisibilityOptions.checkOpacity, true);
+assert.equal(hiddenVisibilityOptions.opacityProperty, true);
+assert.equal(hiddenVisibilityOptions.checkVisibilityCSS, true);
+assert.equal(hiddenVisibilityOptions.visibilityProperty, true);
+assert.equal(hiddenVisibilityOptions.contentVisibilityAuto, true);
+
 videos.length = 0;
 const noPlayer = JSON.parse(detector('focused'));
 assert.equal(noPlayer.isAd, false);
 assert.equal(noPlayer.hasPlayer, false);
-console.log('PASS: focused mode remains region-bound; full mode scans the viewport and ignores enormous wrappers');
+console.log('PASS: scan bounds, enormous-wrapper filtering, and effective visibility checks');
 
 function element(box, options = {}) {
   const attributes = options.attributes || {};
@@ -99,6 +120,7 @@ function element(box, options = {}) {
     parentElement: options.parentElement || null,
     getBoundingClientRect: () => box,
     getAttribute: name => attributes[name] || '',
+    checkVisibility: options.checkVisibility,
     querySelectorAll: options.querySelectorAll,
     closest: options.closest || (() => null)
   };
