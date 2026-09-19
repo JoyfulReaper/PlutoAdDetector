@@ -50,14 +50,16 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     YoutubeUpload[] candidates;
     try
     {
-        candidates = await YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken);
+        candidates = options.YoutubeVideoId is null
+            ? await YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken)
+            : [];
     }
     catch (Exception exception) when (exception is HttpRequestException or System.Xml.XmlException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
     {
         Console.Error.WriteLine($"youtube RSS failed: {exception.Message}");
         candidates = [];
     }
-    await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(candidates, options.MinimumDurationSeconds);
+    await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(candidates, options.MinimumDurationSeconds, options.YoutubeVideoId);
 
     using var playwright = await Playwright.CreateAsync();
     var chromeExecutable = FindInstalledGoogleChrome();
@@ -119,7 +121,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     while (!cancellationToken.IsCancellationRequested)
     {
         // Fetch asynchronously so slow RSS requests never block ad detection.
-        if (feedRefresh is null && DateTimeOffset.UtcNow >= nextFeedRefreshAt)
+        if (options.YoutubeVideoId is null && feedRefresh is null && DateTimeOffset.UtcNow >= nextFeedRefreshAt)
             feedRefresh = YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken);
         if (feedRefresh?.IsCompleted is true)
         {
@@ -390,6 +392,7 @@ internal static class JsonOptions
 internal sealed record DetectorOptions(
     string Url,
     string ChannelUrl,
+    string? YoutubeVideoId,
     int MinimumDurationSeconds,
     bool Headless,
     TimeSpan PollInterval,
@@ -405,6 +408,7 @@ internal sealed record DetectorOptions(
           --headless                 Run Chromium without a visible window (headed is the default)
           --url <url>                Pluto URL (default: https://pluto.tv/live-tv)
           --channel-url <url>        YouTube channel (default: https://www.youtube.com/@MeidasTouch)
+          --youtube-url <url>        Single video; bypass RSS and duration filtering (exclusive with --channel-url)
           --min-duration-seconds <n> Minimum duration (default: 300)
           --poll-ms <milliseconds>   Detection interval (default: 500)
           --confirm <count>          Consecutive samples required for a transition (default: 2)
@@ -417,6 +421,8 @@ internal sealed record DetectorOptions(
     {
         var url = DefaultUrl;
         var channelUrl = "https://www.youtube.com/@MeidasTouch";
+        var channelExplicit = false;
+        string? youtubeUrl = null;
         var minimumDurationSeconds = 300;
         var headless = false;
         var pollMilliseconds = 500;
@@ -443,7 +449,11 @@ internal sealed record DetectorOptions(
                     headless = true;
                     break;
                 case "--channel-url":
+                    channelExplicit = true;
                     channelUrl = NextValue("--channel-url");
+                    break;
+                case "--youtube-url":
+                    youtubeUrl = NextValue("--youtube-url");
                     break;
                 case "--min-duration-seconds":
                     minimumDurationSeconds = ParsePositiveInt(NextValue("--min-duration-seconds"), "--min-duration-seconds");
@@ -482,9 +492,13 @@ internal sealed record DetectorOptions(
             channelUri.Scheme != "https" || channelUri.Host is not ("youtube.com" or "www.youtube.com" or "m.youtube.com") ||
             !(channelUri.AbsolutePath.StartsWith("/@") || channelUri.AbsolutePath.StartsWith("/channel/")))
             throw new ArgumentException("--channel-url must be a YouTube HTTPS channel or @handle URL.");
+        if (channelExplicit && youtubeUrl is not null)
+            throw new ArgumentException("--youtube-url and --channel-url cannot both be supplied.");
+        var youtubeVideoId = youtubeUrl is null ? null : ParseYoutubeVideoId(youtubeUrl);
         return new DetectorOptions(
             url,
             channelUrl,
+            youtubeVideoId,
             minimumDurationSeconds,
             headless,
             TimeSpan.FromMilliseconds(pollMilliseconds),
@@ -492,6 +506,28 @@ internal sealed record DetectorOptions(
             captureDirectory,
             TimeSpan.FromSeconds(captureSeconds),
             showHelp);
+    }
+
+    private static string ParseYoutubeVideoId(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http"))
+            throw new ArgumentException("--youtube-url must be a YouTube video URL.");
+        string? id = null;
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (uri.Host is "youtu.be" or "www.youtu.be" && segments.Length == 1)
+            id = segments[0];
+        else if (uri.Host is "youtube.com" or "www.youtube.com" or "m.youtube.com")
+        {
+            if (uri.AbsolutePath == "/watch")
+                id = uri.Query.TrimStart('?').Split('&').Select(part => part.Split('=', 2))
+                    .Where(parts => parts.Length == 2 && parts[0] == "v")
+                    .Select(parts => Uri.UnescapeDataString(parts[1])).FirstOrDefault();
+            else if (segments.Length == 2 && segments[0] is "embed" or "shorts" or "live")
+                id = segments[1];
+        }
+        if (id is null || id.Length != 11 || !id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))
+            throw new ArgumentException("--youtube-url must contain a valid 11-character YouTube video ID (watch, youtu.be, embed, shorts, or live URL).");
+        return id;
     }
 
     private static int ParsePositiveInt(string value, string option)

@@ -51,4 +51,16 @@ retain the existing queue and retry at the next refresh.
 Options: `--channel-url https://www.youtube.com/@MeidasTouch` and
 `--min-duration-seconds 300` (the defaults). Channel URLs may use an @handle or
 `/channel/UC...` ID. No API key is needed.
-The former `--youtube-url` option has been removed.
+To use one video instead of the recent-upload queue:
+
+```powershell
+dotnet run -- --youtube-url "https://www.youtube.com/watch?v=M7lc1UVf-VE"
+```
+
+This override skips channel discovery, RSS refreshes, and duration filtering,
+including for videos shorter than five minutes. The same video pauses and resumes
+across Pluto ad breaks without reloading. It does not advance to another video
+when it ends. Watch, youtu.be, embed, shorts, and live URLs are supported.
+Do not explicitly supply both `--youtube-url` and `--channel-url`; this is a CLI
+error even if the channel is MeidasTouch. Without either option, the default
+MeidasTouch recent-video queue remains active.

@@ -29,11 +29,11 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
 
     internal Uri Url { get; }
 
-    internal static LocalYoutubePlayerHost Start(YoutubeUpload[] candidates, int minimumDurationSeconds)
+    internal static LocalYoutubePlayerHost Start(YoutubeUpload[] candidates, int minimumDurationSeconds, string? singleVideoId = null)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
-        return new LocalYoutubePlayerHost(listener, CreateHtml(candidates, minimumDurationSeconds));
+        return new LocalYoutubePlayerHost(listener, CreateHtml(candidates, minimumDurationSeconds, singleVideoId));
     }
 
 
@@ -98,7 +98,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
     }
 
 
-    private static string CreateHtml(YoutubeUpload[] candidates, int minimumDurationSeconds)
+    private static string CreateHtml(YoutubeUpload[] candidates, int minimumDurationSeconds, string? singleVideoId)
     {
         var candidatesJson = JsonSerializer.Serialize(candidates, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
         return $$"""
@@ -127,6 +127,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
               <script>
                 const candidates = {{candidatesJson}};
                 const minimumDuration = {{minimumDurationSeconds}};
+                const singleVideoId = {{JsonSerializer.Serialize(singleVideoId)}};
                 let probe;
                 let probeReady = false;
                 let player;
@@ -158,6 +159,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                 }
 
                 async function refreshQueue(items) {
+                  if (singleVideoId) return;
                   if (!ready || !probeReady || refreshing) { pendingRefresh = items; return; }
                   refreshing = true;
                   try {
@@ -258,10 +260,17 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                     events: {
                       onReady: () => {
                         ready = true;
+                        if (singleVideoId) {
+                          current = { id: singleVideoId, title: singleVideoId };
+                          queue = [current];
+                          player.cueVideoById(singleVideoId);
+                          log(`single-video override ${singleVideoId}; RSS and duration filtering disabled`);
+                          return;
+                        }
                         void refreshQueue(candidates);
                       },
                       onStateChange: event => {
-                        if (event.data === YT.PlayerState.ENDED && current) {
+                        if (event.data === YT.PlayerState.ENDED && current && !singleVideoId) {
                           completed.add(current.id);
                           queue = queue.filter(item => item.id !== current.id);
                           selectCurrent();
@@ -276,6 +285,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                       }
                     }
                   });
+                  if (singleVideoId) return;
                   probe = new YT.Player('probe', {
                     width: '200', height: '200',
                     playerVars: { autoplay: 0, controls: 0, origin: window.location.origin },

@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const item = (id, published = 1) => ({ id, title: `Title ${id}`, published: new Date(published * 1000).toISOString() });
 const candidates = ['short', 'boundary', 'error', 'long'].map((id, i) => item(id, 10-i));
 const script = fs.readFileSync('LocalYoutubePlayerHost.cs', 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1]
-  .replace('{{candidatesJson}}', JSON.stringify(candidates)).replace('{{minimumDurationSeconds}}', '300');
+  .replace('{{candidatesJson}}', JSON.stringify(candidates)).replace('{{minimumDurationSeconds}}', '300')
+  .replace('{{JsonSerializer.Serialize(singleVideoId)}}', 'null');
 const players = {};
 const logs = [];
 const context = { window: { location: { origin: 'http://127.0.0.1:1234' } },
@@ -55,5 +56,25 @@ async function test() {
   assert.equal(controls.getQueue().currentId, 'new24');
   assert(!controls.getQueue().videos.some(x => x.id === 'boundary'));
   console.log('PASS: duration filtering, skip logs, deduplication, newest-first ordering, cap, current preservation, advancement and pause during refresh');
+  delete players.probe;
+  const singleContext = { ...context, window: { location: context.window.location } };
+  vm.runInNewContext(script.replace('const singleVideoId = null;', 'const singleVideoId = "short";'), singleContext);
+  singleContext.window.onYouTubeIframeAPIReady();
+  players.player.events.onReady();
+  const single = singleContext.window.youtubePlayerControls;
+  assert.equal(players.probe, undefined); // No duration checks for the short override.
+  assert.equal(players.player.id, 'short');
+  const singleLoads = players.player.loads;
+  players.player.position = 42;
+  single.play(); single.pause(); single.play();
+  assert.equal(players.player.loads, singleLoads);
+  assert.equal(players.player.position, 42);
+  assert.equal(players.player.playing, true);
+  single.refresh(additions);
+  players.player.events.onStateChange({ data: 0 });
+  assert.equal(single.getQueue().currentId, 'short');
+  assert.equal(single.getQueue().videos.length, 1);
+  assert.equal(players.player.loads, singleLoads);
+  console.log('PASS: single-video override bypasses duration probing/refresh and preserves pause/resume and video selection');
 }
 test().catch(error => { console.error(error); process.exitCode = 1; });
