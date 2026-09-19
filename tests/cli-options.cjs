@@ -7,12 +7,17 @@ for (const url of [video, 'https://youtu.be/M7lc1UVf-VE?t=10', 'https://www.yout
   assert.equal(run(['--youtube-url', url, '--help']).status, 0);
 }
 assert.equal(run(['--help']).status, 0);
+assert.match(run(['--help']).stderr, /--scan-mode focused\|full/);
+assert.equal(run(['--scan-mode', 'focused', '--help']).status, 0);
+assert.equal(run(['--scan-mode', 'full', '--help']).status, 0);
 assert.equal(run(['--channel-url', channel, '--help']).status, 0);
 for (const args of [
   ['--youtube-url', video, '--channel-url', channel],
   ['--channel-url', channel, '--youtube-url', video],
   ['--youtube-url', 'https://example.com/watch?v=M7lc1UVf-VE'],
   ['--youtube-url', 'https://youtube.com/watch?v=bad'],
-  ['--youtube-url']
+  ['--youtube-url'],
+  ['--scan-mode', 'wide'],
+  ['--scan-mode']
 ]) assert.equal(run([...args, ...(args.length === 1 ? [] : ['--help'])]).status, 2);
-console.log('PASS: CLI defaults, URL formats, validation, missing value, and explicit-channel conflicts in both orders');
+console.log('PASS: CLI defaults, scan modes, URL formats, validation, missing value, and explicit-channel conflicts in both orders');

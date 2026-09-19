@@ -5,6 +5,10 @@ upper-left portion of the video player for a visible ad indicator. It prefers
 visible DOM text and accessibility-related attributes (`aria-label`, `title`,
 `role`, and test IDs). Until such an indicator has been observed, it periodically
 saves an upper-left player crop under `captures/` for later visual-detector work.
+The default `focused` scan finds the largest visible video and checks only likely
+semantic/ad candidates and hit-tested elements in its upper-left region. Use
+`--scan-mode full` to retain the original whole-document scan for debugging or
+fallback comparison.
 
 Standard output contains only state changes and the detector that caused them:
 
