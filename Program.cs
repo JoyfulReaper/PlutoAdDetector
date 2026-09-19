@@ -47,11 +47,16 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     Directory.CreateDirectory(options.CaptureDirectory);
 
     using var playwright = await Playwright.CreateAsync();
+    var chromeExecutable = FindInstalledGoogleChrome();
     await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
     {
         Headless = options.Headless,
+        ExecutablePath = chromeExecutable,
         Args = ["--autoplay-policy=no-user-gesture-required"]
     });
+    Console.Error.WriteLine(chromeExecutable is null
+        ? "browser: Playwright Chromium"
+        : $"browser: Google Chrome ({chromeExecutable})");
 
     var context = await browser.NewContextAsync(new BrowserNewContextOptions
     {
@@ -82,6 +87,9 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var pendingCount = 0;
     var everFoundSemanticIndicator = false;
     var nextCaptureAt = DateTimeOffset.UtcNow;
+    var youtubePlaybackStarted = false;
+    string? loggedYoutubeError = null;
+    var nextYoutubeHealthCheckAt = DateTimeOffset.MinValue;
 
     while (!cancellationToken.IsCancellationRequested)
     {
@@ -106,13 +114,17 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 activeDetectionMethod = sample.Method;
                 await SetPlutoMutedAsync(plutoPage, muted: true);
                 await youtubePage.BringToFrontAsync();
-                await ResumeYoutubeAsync(youtubePage);
+                youtubePlaybackStarted = await ResumeYoutubeAsync(youtubePage);
+                loggedYoutubeError = null;
+                nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow;
                 Console.WriteLine($"ad started [{activeDetectionMethod}]");
                 publishedState = true;
             }
             else if (publishedState is true)
             {
                 await PauseYoutubeAsync(youtubePage);
+                youtubePlaybackStarted = false;
+                loggedYoutubeError = null;
                 await plutoPage.BringToFrontAsync();
                 await SetPlutoMutedAsync(plutoPage, muted: false);
                 Console.WriteLine($"ad ended [{sample.Method}]");
@@ -129,8 +141,35 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             nextCaptureAt = DateTimeOffset.UtcNow.Add(options.CaptureInterval);
         }
 
+        if (youtubePlaybackStarted && DateTimeOffset.UtcNow >= nextYoutubeHealthCheckAt)
+        {
+            var youtubeError = await DetectYoutubeErrorAsync(youtubePage);
+            if (youtubeError is not null && youtubeError != loggedYoutubeError)
+            {
+                Console.Error.WriteLine($"youtube player error: {youtubeError}");
+            }
+
+            loggedYoutubeError = youtubeError;
+            nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow.AddSeconds(2);
+        }
+
         await Task.Delay(options.PollInterval, cancellationToken);
     }
+}
+
+static string? FindInstalledGoogleChrome()
+{
+    string[] candidates =
+    [
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "Google", "Chrome", "Application", "chrome.exe"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            "Google", "Chrome", "Application", "chrome.exe"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Google", "Chrome", "Application", "chrome.exe")
+    ];
+
+    return candidates.FirstOrDefault(File.Exists);
 }
 
 static async Task SetPlutoMutedAsync(IPage page, bool muted)
@@ -170,7 +209,7 @@ static async Task PauseYoutubeAsync(IPage page)
         : $"youtube pause failed: {result?.Error ?? "Unknown error."}");
 }
 
-static async Task ResumeYoutubeAsync(IPage page)
+static async Task<bool> ResumeYoutubeAsync(IPage page)
 {
     var json = await page.EvaluateAsync<string>(
         """
@@ -199,6 +238,49 @@ static async Task ResumeYoutubeAsync(IPage page)
     Console.Error.WriteLine(result?.Success is true
         ? "youtube resumed"
         : $"youtube resume failed: {result?.Error ?? "Unknown error."}");
+    return result?.Success is true;
+}
+
+static async Task<string?> DetectYoutubeErrorAsync(IPage page)
+{
+    return await page.EvaluateAsync<string?>(
+        """
+        () => {
+          const video = document.querySelector('video');
+          if (video?.error) {
+            const names = {
+              1: 'MEDIA_ERR_ABORTED',
+              2: 'MEDIA_ERR_NETWORK',
+              3: 'MEDIA_ERR_DECODE',
+              4: 'MEDIA_ERR_SRC_NOT_SUPPORTED'
+            };
+            const name = names[video.error.code] || `MEDIA_ERR_${video.error.code}`;
+            return `${name}: ${video.error.message || 'No media error message was provided.'}`;
+          }
+
+          const selectors = [
+            '.ytp-error-content-wrap-reason',
+            '.ytp-error-content-wrap-subreason',
+            '.ytp-error-content-wrap',
+            '.ytp-error'
+          ];
+          for (const selector of selectors) {
+            const element = document.querySelector(selector);
+            if (!element) continue;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            const visible = style.display !== 'none' && style.visibility !== 'hidden' &&
+                            Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
+            const message = (element.innerText || element.textContent || '').trim().replace(/\s+/g, ' ');
+            if (visible && message) return message;
+          }
+
+          const player = document.querySelector('#movie_player');
+          return player?.classList.contains('ytp-error')
+            ? 'YouTube player entered an error state.'
+            : null;
+        }
+        """);
 }
 
 static async Task<DetectionSample> DetectAsync(IPage page)
