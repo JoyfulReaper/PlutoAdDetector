@@ -55,25 +55,37 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 
     var context = await browser.NewContextAsync(new BrowserNewContextOptions
     {
-        ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+        ViewportSize = options.Headless
+            ? new ViewportSize { Width = 1440, Height = 900 }
+            : ViewportSize.NoViewport,
         Locale = "en-US"
     });
-    var page = await context.NewPageAsync();
-    await page.GotoAsync(options.Url, new PageGotoOptions
+    var plutoPage = await context.NewPageAsync();
+    await plutoPage.GotoAsync(options.Url, new PageGotoOptions
     {
         WaitUntil = WaitUntilState.DOMContentLoaded,
         Timeout = 90_000
     });
 
+    var youtubePage = await context.NewPageAsync();
+    await youtubePage.GotoAsync(options.YoutubeUrl, new PageGotoOptions
+    {
+        WaitUntil = WaitUntilState.DOMContentLoaded,
+        Timeout = 90_000
+    });
+    await PauseYoutubeAsync(youtubePage);
+    await plutoPage.BringToFrontAsync();
+
     bool? publishedState = null;
     bool? pendingState = null;
+    var activeDetectionMethod = "DOM";
     var pendingCount = 0;
     var everFoundSemanticIndicator = false;
     var nextCaptureAt = DateTimeOffset.UtcNow;
 
     while (!cancellationToken.IsCancellationRequested)
     {
-        var sample = await DetectAsync(page);
+        var sample = await DetectAsync(plutoPage);
         everFoundSemanticIndicator |= sample.IsAd;
 
         if (pendingState == sample.IsAd)
@@ -91,12 +103,19 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             // A non-ad page load is baseline state, not an "ad ended" transition.
             if (sample.IsAd)
             {
-                Console.WriteLine("ad started");
+                activeDetectionMethod = sample.Method;
+                await SetPlutoMutedAsync(plutoPage, muted: true);
+                await youtubePage.BringToFrontAsync();
+                await ResumeYoutubeAsync(youtubePage);
+                Console.WriteLine($"ad started [{activeDetectionMethod}]");
                 publishedState = true;
             }
             else if (publishedState is true)
             {
-                Console.WriteLine("ad ended");
+                await PauseYoutubeAsync(youtubePage);
+                await plutoPage.BringToFrontAsync();
+                await SetPlutoMutedAsync(plutoPage, muted: false);
+                Console.WriteLine($"ad ended [{sample.Method}]");
                 publishedState = false;
             }
         }
@@ -106,12 +125,38 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             sample.HasPlayer &&
             DateTimeOffset.UtcNow >= nextCaptureAt)
         {
-            await SaveDiagnosticCropAsync(page, sample, options.CaptureDirectory);
+            await SaveDiagnosticCropAsync(plutoPage, sample, options.CaptureDirectory);
             nextCaptureAt = DateTimeOffset.UtcNow.Add(options.CaptureInterval);
         }
 
         await Task.Delay(options.PollInterval, cancellationToken);
     }
+}
+
+static async Task SetPlutoMutedAsync(IPage page, bool muted)
+{
+    await page.EvaluateAsync(
+        "muted => document.querySelectorAll('video').forEach(video => video.muted = muted)",
+        muted);
+}
+
+static async Task PauseYoutubeAsync(IPage page)
+{
+    await page.EvaluateAsync(
+        "() => document.querySelectorAll('video').forEach(video => video.pause())");
+}
+
+static async Task ResumeYoutubeAsync(IPage page)
+{
+    await page.EvaluateAsync(
+        """
+        async () => {
+          const video = document.querySelector('video');
+          if (!video) return;
+          video.muted = false;
+          try { await video.play(); } catch { }
+        }
+        """);
 }
 
 static async Task<DetectionSample> DetectAsync(IPage page)
@@ -132,7 +177,7 @@ static async Task<DetectionSample> DetectAsync(IPage page)
             (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height))[0];
 
           if (!player) {
-            return JSON.stringify({ isAd: false, hasPlayer: false, x: 0, y: 0, width: 0, height: 0 });
+            return JSON.stringify({ isAd: false, method: 'DOM', hasPlayer: false, x: 0, y: 0, width: 0, height: 0 });
           }
 
           const p = player.rect;
@@ -172,6 +217,7 @@ static async Task<DetectionSample> DetectAsync(IPage page)
 
           return JSON.stringify({
             isAd,
+            method: 'DOM',
             hasPlayer: true,
             x: Math.max(0, region.left),
             y: Math.max(0, region.top),
@@ -183,7 +229,7 @@ static async Task<DetectionSample> DetectAsync(IPage page)
 
     var json = await page.EvaluateAsync<string>(script);
     return JsonSerializer.Deserialize<DetectionSample>(json, JsonOptions.Instance)
-        ?? new DetectionSample(false, false, 0, 0, 0, 0);
+        ?? new DetectionSample(false, "DOM", false, 0, 0, 0, 0);
 }
 
 static async Task SaveDiagnosticCropAsync(IPage page, DetectionSample sample, string captureDirectory)
@@ -212,6 +258,7 @@ static async Task SaveDiagnosticCropAsync(IPage page, DetectionSample sample, st
 
 internal sealed record DetectionSample(
     bool IsAd,
+    string Method,
     bool HasPlayer,
     float X,
     float Y,
@@ -228,6 +275,7 @@ internal static class JsonOptions
 
 internal sealed record DetectorOptions(
     string Url,
+    string YoutubeUrl,
     bool Headless,
     TimeSpan PollInterval,
     int ConfirmationSamples,
@@ -236,11 +284,13 @@ internal sealed record DetectorOptions(
     bool ShowHelp)
 {
     private const string DefaultUrl = "https://pluto.tv/live-tv";
+    private const string DefaultYoutubeUrl = "https://www.youtube.com/watch?v=M7lc1UVf-VE";
 
     internal const string Usage = """
         PlutoAdDetector
           --headless                 Run Chromium without a visible window (headed is the default)
           --url <url>                Pluto URL (default: https://pluto.tv/live-tv)
+          --youtube-url <url>        Test YouTube video URL
           --poll-ms <milliseconds>   Detection interval (default: 500)
           --confirm <count>          Consecutive samples required for a transition (default: 2)
           --captures <directory>     Visual fallback directory (default: captures)
@@ -251,6 +301,7 @@ internal sealed record DetectorOptions(
     internal static DetectorOptions Parse(string[] args)
     {
         var url = DefaultUrl;
+        var youtubeUrl = DefaultYoutubeUrl;
         var headless = false;
         var pollMilliseconds = 500;
         var confirmationSamples = 2;
@@ -278,6 +329,9 @@ internal sealed record DetectorOptions(
                 case "--url":
                     url = NextValue("--url");
                     break;
+                case "--youtube-url":
+                    youtubeUrl = NextValue("--youtube-url");
+                    break;
                 case "--poll-ms":
                     pollMilliseconds = ParsePositiveInt(NextValue("--poll-ms"), "--poll-ms");
                     break;
@@ -304,8 +358,15 @@ internal sealed record DetectorOptions(
             throw new ArgumentException("--url must be an absolute HTTP or HTTPS URL.");
         }
 
+        if (!Uri.TryCreate(youtubeUrl, UriKind.Absolute, out var youtubeUri) ||
+            (youtubeUri.Scheme != Uri.UriSchemeHttps && youtubeUri.Scheme != Uri.UriSchemeHttp))
+        {
+            throw new ArgumentException("--youtube-url must be an absolute HTTP or HTTPS URL.");
+        }
+
         return new DetectorOptions(
             url,
+            youtubeUrl,
             headless,
             TimeSpan.FromMilliseconds(pollMilliseconds),
             confirmationSamples,
