@@ -9,7 +9,8 @@ const script = fs.readFileSync('LocalYoutubePlayerHost.cs', 'utf8').match(/<scri
   .replace('{{JsonSerializer.Serialize(singleVideoId)}}', 'null');
 const players = {};
 const logs = [];
-const context = { window: { location: { origin: 'http://127.0.0.1:1234' } },
+const keyListeners = [];
+const context = { window: { location: { origin: 'http://127.0.0.1:1234' }, addEventListener: (type, listener) => { if (type === 'keydown') keyListeners.push(listener); } },
   console: { log: value => logs.push(value) }, setTimeout: callback => setImmediate(callback),
   YT: { PlayerState: { ENDED: 0, PLAYING: 1 }, Player: class {
     constructor(id, options) { players[id] = this; this.events = options.events; this.id = ''; this.playing = false; this.loads = 0; this.loadedIds = []; }
@@ -50,17 +51,29 @@ async function test() {
   assert.equal(queue.videos[1].id, 'new0');
   assert.equal(players.player.loads, loads); // Refresh did not reset position or reload.
   assert.equal(players.player.playing, true);
-  players.player.events.onStateChange({ data: 0 });
+  assert.equal(controls.skip().success, true);
   assert.equal(players.player.id, 'new0');
+  assert.equal(players.player.playing, true);
+  assert(logs.some(x => x.includes('manually skipped Title boundary [boundary]')));
+  assert(logs.some(x => x.includes('selected Title new0 [new0]')));
   controls.pause();
   controls.refresh([...additions, ...candidates]);
   await waitRefresh(3);
   assert.equal(players.player.playing, false);
   assert.equal(controls.getQueue().currentId, 'new0');
   assert(!controls.getQueue().videos.some(x => x.id === 'boundary'));
-  console.log('PASS: duration filtering, skip logs, deduplication, newest-first ordering, cap, current preservation, advancement and pause during refresh');
+  let prevented = false;
+  keyListeners[0]({ code: 'KeyN', repeat: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(controls.getQueue().currentId, 'new1');
+  assert.equal(players.player.playing, false);
+  assert(controls.getQueue().videos.every(x => x.id !== 'new0'));
+  console.log('PASS: duration filtering, auto/manual skip logs, deduplication, ordering, cap, current preservation, N shortcut, advancement and pause intent');
   delete players.probe;
-  const singleContext = { ...context, window: { location: context.window.location } };
+  const singleKeys = [];
+  const singleContext = { ...context, window: { location: context.window.location,
+    addEventListener: (type, listener) => { if (type === 'keydown') singleKeys.push(listener); } } };
   vm.runInNewContext(script.replace('const singleVideoId = null;', 'const singleVideoId = "short";'), singleContext);
   singleContext.window.onYouTubeIframeAPIReady();
   players.player.events.onReady();
@@ -78,6 +91,11 @@ async function test() {
   assert.equal(single.getQueue().currentId, 'short');
   assert.equal(single.getQueue().videos.length, 1);
   assert.equal(players.player.loads, singleLoads);
-  console.log('PASS: single-video override bypasses duration probing/refresh and preserves pause/resume and video selection');
+  assert.equal(single.skip().success, false);
+  singleKeys[0]({ code: 'KeyN', repeat: false, ctrlKey: false, altKey: false, metaKey: false, preventDefault() {} });
+  assert.equal(single.getQueue().currentId, 'short');
+  assert.equal(players.player.loads, singleLoads);
+  assert(logs.filter(x => x.includes('manual skipping is unavailable in single-video mode')).length >= 2);
+  console.log('PASS: single-video override bypasses probing/refresh/skip and preserves pause/resume and video selection');
 }
 test().catch(error => { console.error(error); process.exitCode = 1; });

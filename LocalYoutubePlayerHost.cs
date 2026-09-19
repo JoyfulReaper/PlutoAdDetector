@@ -223,6 +223,26 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   153: 'Missing or invalid playback client identity'
                 };
 
+                function skipCurrent() {
+                  if (singleVideoId) {
+                    const message = 'manual skipping is unavailable in single-video mode';
+                    log(message);
+                    return { success: false, error: message };
+                  }
+                  if (!ready) return { success: false, error: 'YouTube IFrame player is not ready.' };
+                  if (!current) {
+                    const message = 'manual skip requested with no current queued video';
+                    log(message);
+                    return { success: false, error: message };
+                  }
+                  const skipped = current;
+                  completed.add(skipped.id);
+                  queue = queue.filter(item => item.id !== skipped.id);
+                  log(`manually skipped ${skipped.title} [${skipped.id}]`);
+                  selectCurrent();
+                  return { success: true, error: null };
+                }
+
                 window.youtubePlayerControls = {
                   isReady: () => ready,
                   play: () => {
@@ -249,9 +269,16 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                     }
                   },
                   getError: () => lastError,
+                  skip: skipCurrent,
                   refresh: items => { void refreshQueue(items); },
                   getQueue: () => ({ currentId: current?.id || null, videos: queue })
                 };
+
+                window.addEventListener('keydown', event => {
+                  if (event.code !== 'KeyN' || event.repeat || event.ctrlKey || event.altKey || event.metaKey) return;
+                  event.preventDefault();
+                  skipCurrent();
+                });
 
                 window.onYouTubeIframeAPIReady = () => {
                   player = new YT.Player('player', {

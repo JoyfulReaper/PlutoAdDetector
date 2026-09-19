@@ -49,12 +49,18 @@ The queue holds at most 20 valid videos, retaining the current video and orderin
 waiting videos newest first. Duplicate IDs and videos completed during this run
 are excluded. The current video and its playback position are preserved across
 refreshes and ad breaks; queue state is in memory for the current run.
+Press `N` while the local YouTube player page has keyboard focus to skip the
+current automatic-queue video. The video is considered completed for the run,
+removed from the queue, and the next video follows the current play/pause intent.
+The same operation is available as `window.youtubePlayerControls.skip()`.
 Automatic channel mode also uses channel-page renderer metadata to reject current
 live streams, scheduled/upcoming streams, unfinished premieres, and stream
 recordings before probing duration. Each rejection logs its title, ID, and reason.
 Completed premieres without live/upcoming markers remain eligible. The duration
 probe remains the second eligibility check. `--youtube-url` bypasses these
 automatic restrictions, so an explicitly selected live URL is allowed.
+Manual skipping is disabled in `--youtube-url` mode; `N` leaves the selected
+video untouched and writes an explanatory queue log.
 Unavailable videos and metadata timeouts are skipped. Logs include skipped titles,
 durations (or “unknown”), and the queue after each successful refresh. RSS failures
 retain the existing queue and retry at the next refresh.
