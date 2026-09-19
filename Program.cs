@@ -451,9 +451,7 @@ static bool IsPlutoSource(Uri sourceUri) =>
 
 static async Task SetSourceMutedAsync(IPage page, bool muted)
 {
-    await page.EvaluateAsync(
-        "muted => document.querySelectorAll('video').forEach(video => video.muted = muted)",
-        muted);
+    await page.EvaluateAsync(SourceMuteScript.Script, muted);
 }
 
 static async Task PauseYoutubeAsync(IPage page)
