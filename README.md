@@ -1,24 +1,25 @@
 # PlutoAdDetector
 
-A .NET 10 proof of concept that opens a source/streaming page in Chromium (Pluto
-TV by default) and watches the upper-left portion of its largest video player for
-a visible ad indicator. It prefers
-visible DOM text and accessibility-related attributes (`aria-label`, `title`,
-`role`, and test IDs). Until such an indicator has been observed, it periodically
-saves an upper-left player crop under `captures/` for later visual-detector work.
-The default `focused` scan finds the largest visible video and checks only likely
-semantic/ad candidates and hit-tested elements in its upper-left region. Use
-`--scan-mode full` to retain the original whole-document scan for debugging or
-fallback comparison.
+A .NET 10 proof of concept that watches a streaming page for Pluto's visible ad
+indicator and uses ad breaks to switch to a local YouTube IFrame player.
 
-Standard output contains only state changes and the detector that caused them:
+> Yes, this is AI-assisted slop. Unfortunately, it works.
+
+Pluto TV is the default source. When an ad starts, the app mutes the source,
+brings YouTube forward, and resumes it. When the ad ends, it pauses YouTube,
+returns to the source, and unmutes it. Detection is debounced; normal state
+changes look like:
 
 ```text
 ad started [DOM]
 ad ended [DOM]
+ad tracking paused
+ad tracking resumed
 ```
 
-## Setup and run
+## Run it
+
+Requirements: .NET 10 and either installed Google Chrome or Playwright Chromium.
 
 ```powershell
 dotnet restore
@@ -27,86 +28,146 @@ pwsh .\bin\Debug\net10.0\playwright.ps1 install chromium
 dotnet run
 ```
 
-Chromium is headed by default and uses the real browser-window dimensions rather
-than an emulated viewport. When Google Chrome is installed, Playwright launches
-that executable; otherwise it falls back to Playwright's bundled Chromium. It
-uses a dedicated persistent profile under `browser-profile/`, so cookies and
-browser state survive between runs without using or modifying the normal Chrome
-profile. The headed browser remains available for normal interaction. A second
-tab opens a loopback-hosted local page that embeds recent MeidasTouch uploads through
-the YouTube IFrame Player API. When an ad starts, the source page is muted and the
-embedded player is brought forward and resumed. When the ad ends, it is paused
-and the source page is brought forward and unmuted. YouTube IFrame API errors are logged after
-playback starts.
+The browser is headed by default. Installed Google Chrome is preferred; the
+Playwright browser is the fallback. The app uses a dedicated persistent profile
+at `browser-profile/`, never your normal Chrome profile. Headed mode uses the real
+window size and remains available for normal interaction.
 
-Use `dotnet run -- --headless` to hide Chromium. Run `dotnet run -- --help` for
-polling, confirmation, source URL, and capture options. `--url <url>` accepts any
-absolute HTTP or HTTPS streaming-page URL, so the existing browser, mute, and tab
-switching can be tried with other services. The automatic DOM detector profile is
-still Pluto-specific; non-Pluto source URLs produce a warning and should be
-treated as manual experiments rather than claimed detector compatibility.
-
-At startup, the public channel RSS feed supplies recent uploads (no API key).
-If RSS returns an error or malformed content, discovery falls back to the channel's
-`/videos` page and reads normal-video IDs and titles from its embedded
-`ytInitialData`. Shorts-style renderers are ignored and channel-page order is
-preserved. Logs identify the discovery source. If both methods fail during a
-refresh, the existing queue remains intact.
-Discovery runs once at startup. After that, the player queue is checked through
-the local control bridge and discovery refreshes only when five or fewer videos
-remain. Each attempt, including a failure, starts a five-minute cooldown before
-another attempt; the trigger reason is logged. A separate
-muted IFrame player checks durations without interrupting the current video.
-The queue holds at most 20 valid videos, retaining the current video and ordering
-waiting videos newest first. Duplicate IDs and videos completed during this run
-are excluded. The current video and its playback position are preserved across
-refreshes and ad breaks; queue state is in memory for the current run.
-Press `N` while the local YouTube player page has keyboard focus to skip the
-current automatic-queue video. The video is considered completed for the run,
-removed from the queue, and the next video follows the current play/pause intent.
-The same operation is available as `window.youtubePlayerControls.skip()`.
-Press `H` or `?` on the local YouTube page to briefly show its keyboard shortcuts;
-the help overlay stays hidden during normal playback.
-Press `R` on that page to reload `youtube-queue.json`. Runtime reload is accepted
-only while ad tracking is paused or the YouTube tab is foregrounded, and it keeps
-the restored player playing or paused according to its current player state.
-Press `P` in either browser tab to pause or resume ad tracking. Pausing stops ad
-switching, pauses YouTube, brings the source page forward, and unmutes it. Resuming clears
-the detector's pending state and confirms the current state from fresh samples;
-neither operation changes the video queue.
-On normal shutdown or Ctrl+C, automatic channel mode saves a versioned snapshot
-to `youtube-queue.json`, including the current position, ordered queue, durations,
-and completed/skipped IDs. Start with `--resume` to restore a compatible snapshot.
-Snapshots use their saved channel URL and minimum duration only for compatibility
-checks, never to override CLI settings, and snapshots older than seven days are
-treated as stale. Missing, invalid, stale, mismatched, or unsupported snapshots
-are logged and ignored without stopping the application. Single-video
-`--youtube-url` mode neither restores nor creates the file.
-Automatic channel mode also uses channel-page renderer metadata to reject current
-live streams, scheduled/upcoming streams, unfinished premieres, and stream
-recordings before probing duration. Each rejection logs its title, ID, and reason.
-Completed premieres without live/upcoming markers remain eligible. The duration
-probe remains the second eligibility check. `--youtube-url` bypasses these
-automatic restrictions, so an explicitly selected live URL is allowed.
-Manual skipping is disabled in `--youtube-url` mode; `N` leaves the selected
-video untouched and writes an explanatory queue log.
-Unavailable videos and metadata timeouts are skipped. Logs include skipped titles,
-durations (or “unknown”), and the queue after each successful refresh. RSS failures
-retain the existing queue and retry at the next refresh.
-
-Options: `--channel-url https://www.youtube.com/@MeidasTouch` and
-`--min-duration-seconds 300` (the defaults). Channel URLs may use an @handle or
-`/channel/UC...` ID. No API key is needed.
-To use one video instead of the recent-upload queue:
+Useful examples:
 
 ```powershell
+# Restore the last compatible automatic queue
+dotnet run -- --resume
+
+# Use another channel and a 10-minute minimum
+dotnet run -- --channel-url "https://www.youtube.com/@SomeChannel" --min-duration-seconds 600
+
+# Use exactly one video instead of channel discovery
 dotnet run -- --youtube-url "https://www.youtube.com/watch?v=M7lc1UVf-VE"
+
+# Open another streaming service for manual experimentation
+dotnet run -- --url "https://example.com/stream"
+
+# Debug with the original whole-document detector
+dotnet run -- --scan-mode full
 ```
 
-This override skips channel discovery, RSS refreshes, and duration filtering,
-including for videos shorter than five minutes. The same video pauses and resumes
-across detected source ad breaks without reloading. It does not advance to another video
-when it ends. Watch, youtu.be, embed, shorts, and live URLs are supported.
-Do not explicitly supply both `--youtube-url` and `--channel-url`; this is a CLI
-error even if the channel is MeidasTouch. Without either option, the default
-MeidasTouch recent-video queue remains active.
+## YouTube modes
+
+### Automatic channel queue (default)
+
+The default channel is `https://www.youtube.com/@MeidasTouch`. No YouTube API key
+is required.
+
+- Discovery tries the channel's public RSS feed first. It also reads the channel
+  `/videos` page for live/upcoming metadata. If RSS fails or cannot be parsed, the
+  `/videos` page and its embedded `ytInitialData` become the discovery fallback.
+- Custom `--channel-url` values may be an `@handle` or `/channel/UC...` URL.
+- Automatic mode rejects current live streams, scheduled/upcoming streams,
+  unfinished premieres, and videos identified as live-stream recordings. A
+  completed premiere without live/upcoming markers may remain eligible.
+- A separate muted IFrame probes duration. Videos shorter than
+  `--min-duration-seconds` (default: 300), unavailable videos, and metadata
+  timeouts are skipped and logged.
+- The queue keeps at most 20 videos. The current video is preserved across
+  refreshes; duplicates and IDs completed or skipped during this run are omitted.
+- Discovery runs at startup unless a valid `--resume` snapshot is loaded. Later
+  refreshes happen only when five or fewer videos remain. Every attempt, including
+  a failure, starts a five-minute cooldown. A failed discovery retains the queue.
+- When a queued video ends, the next video becomes current. It plays immediately
+  only if YouTube is currently supposed to be playing.
+
+### Single-video override
+
+`--youtube-url` uses only the explicitly selected video. Watch, `youtu.be`, embed,
+Shorts, and live URLs with a valid 11-character video ID are accepted.
+The video must allow playback in an embedded YouTube player; videos with embedding
+disabled by the owner will not work with the local hosted player page.
+
+Single-video mode bypasses channel/RSS discovery, automatic live/upcoming checks,
+duration filtering, queue advancement, manual skipping, and queue save/restore.
+The chosen video pauses and resumes across detected ad breaks without being
+reloaded. An explicitly chosen live or short video is therefore allowed.
+
+Do not explicitly combine `--youtube-url` with `--channel-url`; that is a CLI
+error.
+
+## Queue save and restore
+
+In automatic mode, a normal exit or Ctrl+C makes a best-effort save to
+`youtube-queue.json`. Version 1 stores:
+
+- save time, channel URL, and minimum-duration setting;
+- current video ID/title and playback position when available;
+- the ordered queue with titles, IDs, and durations; and
+- completed/skipped IDs for the current run.
+
+Use `--resume` to load the file at startup. The saved channel and minimum duration
+are compatibility checks only; they never override current CLI options. A restore
+is ignored and logged when the file is missing, invalid, over seven days old,
+version-incompatible, or mismatched with the current channel/minimum duration.
+A successful startup restore skips initial discovery and resumes normal low-queue
+refresh behavior afterward.
+
+Single-video mode does not read or write this file. Save and restore failures are
+logged and do not stop shutdown or normal application startup.
+
+## Keyboard shortcuts
+
+| Key | Action |
+| --- | --- |
+| `N` | Skip the current automatic-queue video, mark it completed for this run, and select the next video. Unavailable in single-video mode. |
+| `P` | Toggle ad tracking. Pausing also pauses YouTube, foregrounds/unmutes the source, and suppresses switching while the detector loop stays alive. Resuming clears debounce state and samples fresh. |
+| `R` | Reload `youtube-queue.json` in automatic mode. Allowed only while tracking is paused or YouTube is foregrounded. The restored video keeps the player's current playing/paused state. |
+| `H` or `?` | Briefly show keyboard help over the local YouTube page. |
+
+`N`, `R`, and help work from the local player page, including when focus is inside
+the YouTube iframe. `P` works from either browser tab. Queue refreshes continue
+while ad tracking is paused; pausing tracking does not clear or reorder the queue.
+
+## Detection and source switching
+
+The default `focused` scan finds the largest visible video and inspects targeted
+text, ARIA/title/role/test-ID candidates plus a bounded hit-test grid in the
+player's upper-left region. It does not iterate over every DOM element every poll.
+
+`--scan-mode full` preserves the original whole-document DOM scan as a debugging
+fallback. Both modes return the same `[DOM]` detection result shape and use the
+same debounce settings (500 ms polling and two confirming samples by default).
+
+`--url` accepts any absolute HTTP or HTTPS source/streaming page. Muting and tab
+switching remain available for experimentation, but the detector profile is
+Pluto-specific. A non-Pluto URL produces a warning; this project does not claim
+automatic compatibility with other services.
+
+Until a semantic ad indicator has been observed, the app periodically saves the
+largest player's upper-left crop under `captures/`. These images are diagnostics
+for possible future visual detection; screenshots are not currently used to
+classify ads.
+
+## CLI options
+
+| Option | Behavior |
+| --- | --- |
+| `--headless` | Hide Chromium. Headed is the default. |
+| `--url <url>` | Source page; absolute HTTP/HTTPS only. Default: `https://pluto.tv/live-tv`. |
+| `--channel-url <url>` | Automatic queue channel. Default: MeidasTouch. |
+| `--youtube-url <url>` | Single-video override; mutually exclusive with an explicitly supplied `--channel-url`. |
+| `--min-duration-seconds <n>` | Automatic queue minimum. Default: `300`. |
+| `--resume` | Restore a compatible automatic queue from `youtube-queue.json`. |
+| `--scan-mode focused\|full` | DOM scan scope. Default: `focused`. |
+| `--poll-ms <n>` | Detector polling interval. Default: `500`. |
+| `--confirm <n>` | Consecutive samples required for a transition. Default: `2`. |
+| `--captures <directory>` | Diagnostic crop directory. Default: `captures`. |
+| `--capture-seconds <n>` | Seconds between diagnostic crops. Default: `30`. |
+| `--help`, `-h` | Print CLI help. |
+
+## Current limitations
+
+- Pluto can change its DOM at any time; focused and full scans are heuristic.
+- There is no visual ad classifier yet—only DOM/accessibility checks and saved
+  diagnostic crops.
+- YouTube videos can fail because embedding is disabled, the video is unavailable,
+  or the IFrame API rejects the playback client. Those errors are logged.
+- Live/upcoming filtering depends on metadata exposed by YouTube's channel page.
+- Queue state is local, versioned, and intentionally limited to automatic mode.

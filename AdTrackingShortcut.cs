@@ -9,6 +9,9 @@ internal static class AdTrackingShortcut
             if (event.code === 'KeyP') {
               event.preventDefault();
               globalThis.requestAdTrackingToggle();
+            } else if (event.code === 'KeyN' && globalThis.top !== globalThis) {
+              event.preventDefault();
+              globalThis.top.postMessage('pluto-ad-detector:skip-youtube-video', '*');
             } else if ((event.code === 'KeyH' || event.key === '?') && globalThis.top !== globalThis) {
               event.preventDefault();
               globalThis.top.postMessage('pluto-ad-detector:show-youtube-help', '*');

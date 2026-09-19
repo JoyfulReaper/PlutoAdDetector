@@ -125,6 +125,9 @@ async function test() {
     currentVideo: { ...restoredState.currentVideo, playbackPositionSeconds: 84 } }).success, true);
   assert.equal(players.player.position, 84);
   assert.equal(players.player.playing, true);
+  const beforeIframeSkip = controls.getQueue().currentId;
+  messageListeners[0]({ data: 'pluto-ad-detector:skip-youtube-video' });
+  assert.notEqual(controls.getQueue().currentId, beforeIframeSkip);
   console.log('PASS: queue behavior, N/R shortcuts, H/? help overlay, restore position/order, and playback intent');
   delete players.probe;
   const singleKeys = [];

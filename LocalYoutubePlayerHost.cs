@@ -403,7 +403,8 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   }
                 });
                 window.addEventListener('message', event => {
-                  if (event.data === 'pluto-ad-detector:show-youtube-help') showKeyboardHelp();
+                  if (event.data === 'pluto-ad-detector:skip-youtube-video') skipCurrent();
+                  else if (event.data === 'pluto-ad-detector:show-youtube-help') showKeyboardHelp();
                   else if (event.data === 'pluto-ad-detector:reload-youtube-queue')
                     void window.requestYoutubeQueueRestore?.();
                 });

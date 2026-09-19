@@ -45,6 +45,8 @@ const iframeContext = {
 iframeContext.globalThis = iframeContext;
 vm.runInNewContext(script, iframeContext);
 let iframePrevented = false;
+iframeListener({ code: 'KeyN', key: 'n', repeat: false, ctrlKey: false, altKey: false, metaKey: false,
+  preventDefault() { iframePrevented = true; } });
 iframeListener({ code: 'KeyH', key: 'h', repeat: false, ctrlKey: false, altKey: false, metaKey: false,
   preventDefault() { iframePrevented = true; } });
 iframeListener({ code: 'Slash', key: '?', repeat: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -53,6 +55,7 @@ iframeListener({ code: 'KeyR', key: 'r', repeat: false, ctrlKey: false, altKey: 
   preventDefault() {} });
 assert.equal(iframePrevented, true);
 assert.deepEqual(messages, [
+  { message: 'pluto-ad-detector:skip-youtube-video', target: '*' },
   { message: 'pluto-ad-detector:show-youtube-help', target: '*' },
   { message: 'pluto-ad-detector:show-youtube-help', target: '*' },
   { message: 'pluto-ad-detector:reload-youtube-queue', target: '*' }
@@ -60,4 +63,4 @@ assert.deepEqual(messages, [
 
 vm.runInNewContext(script, context);
 assert.equal(context.__plutoAdTrackingShortcutInstalled, true);
-console.log('PASS: browser-wide P toggle and iframe H/?/R forwarding');
+console.log('PASS: browser-wide P toggle and iframe N/H/?/R forwarding');
