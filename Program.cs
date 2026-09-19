@@ -112,6 +112,12 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
         new PageWaitForFunctionOptions { Timeout = 60_000 });
     await PauseYoutubeAsync(youtubePage);
     await plutoPage.BringToFrontAsync();
+    await using var youtubeQueueStateSaver = new YoutubeQueueStateSaver(
+        youtubePage,
+        Path.GetFullPath("youtube-queue.json"),
+        options.ChannelUrl,
+        options.MinimumDurationSeconds,
+        options.YoutubeVideoId);
 
     bool? publishedState = null;
     bool? pendingState = null;

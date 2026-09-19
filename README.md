@@ -57,6 +57,10 @@ Press `P` in either browser tab to pause or resume ad tracking. Pausing stops ad
 switching, pauses YouTube, brings Pluto forward, and unmutes it. Resuming clears
 the detector's pending state and confirms the current state from fresh samples;
 neither operation changes the video queue.
+On normal shutdown or Ctrl+C, automatic channel mode saves a versioned snapshot
+to `youtube-queue.json`, including the current position, ordered queue, durations,
+and completed/skipped IDs. This is best-effort shutdown state only; it is not yet
+restored on startup. Single-video `--youtube-url` mode does not create the file.
 Automatic channel mode also uses channel-page renderer metadata to reject current
 live streams, scheduled/upcoming streams, unfinished premieres, and stream
 recordings before probing duration. Each rejection logs its title, ID, and reason.

@@ -271,7 +271,28 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   getError: () => lastError,
                   skip: skipCurrent,
                   refresh: items => { void refreshQueue(items); },
-                  getQueue: () => ({ currentId: current?.id || null, videos: queue })
+                  getQueue: () => ({ currentId: current?.id || null, videos: queue }),
+                  getQueueState: () => {
+                    let playbackPositionSeconds = null;
+                    try {
+                      const value = player?.getCurrentTime?.();
+                      if (Number.isFinite(value) && value >= 0) playbackPositionSeconds = value;
+                    } catch { /* Position is optional during best-effort shutdown. */ }
+                    const savedVideo = item => ({
+                      id: item.id,
+                      title: item.title,
+                      durationSeconds: Number.isFinite(item.duration) ? item.duration : 0
+                    });
+                    return {
+                      currentVideo: current ? {
+                        id: current.id,
+                        title: current.title,
+                        playbackPositionSeconds
+                      } : null,
+                      queuedVideos: queue.map(savedVideo),
+                      completedOrSkippedVideoIds: [...completed]
+                    };
+                  }
                 };
 
                 window.addEventListener('keydown', event => {

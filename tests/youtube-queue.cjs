@@ -19,6 +19,7 @@ const context = { window: { location: { origin: 'http://127.0.0.1:1234' }, addEv
     cueVideoById(id) { this.loads++; this.id = id; this.playing = false; }
     getVideoData() { return this.metadataReads++ === 0 ? undefined : { video_id: this.id }; }
     getDuration() { return { short: 299, boundary: 300, error: 0 }[this.id] ?? 600; }
+    getCurrentTime() { return this.position ?? 0; }
     pauseVideo() { this.playing = false; }
     playVideo() { this.playing = true; }
   } } };
@@ -69,6 +70,14 @@ async function test() {
   assert.equal(controls.getQueue().currentId, 'new1');
   assert.equal(players.player.playing, false);
   assert(controls.getQueue().videos.every(x => x.id !== 'new0'));
+  players.player.position = 17.5;
+  const saved = controls.getQueueState();
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.currentVideo)), {
+    id: 'new1', title: 'Title new1', playbackPositionSeconds: 17.5
+  });
+  assert.equal(saved.queuedVideos[0].id, 'new1');
+  assert.equal(saved.queuedVideos[0].durationSeconds, 600);
+  assert.deepEqual([...saved.completedOrSkippedVideoIds], ['boundary', 'new0']);
   console.log('PASS: duration filtering, auto/manual skip logs, deduplication, ordering, cap, current preservation, N shortcut, advancement and pause intent');
   delete players.probe;
   const singleKeys = [];
