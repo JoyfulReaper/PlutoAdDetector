@@ -10,6 +10,7 @@ assert.equal(run(['--help']).status, 0);
 assert.match(run(['--help']).stderr, /--scan-mode focused\|full/);
 assert.equal(run(['--scan-mode', 'focused', '--help']).status, 0);
 assert.equal(run(['--scan-mode', 'full', '--help']).status, 0);
+assert.equal(run(['--url', 'https://example.com/stream', '--help']).status, 0);
 assert.equal(run(['--channel-url', channel, '--help']).status, 0);
 for (const args of [
   ['--youtube-url', video, '--channel-url', channel],
@@ -18,6 +19,8 @@ for (const args of [
   ['--youtube-url', 'https://youtube.com/watch?v=bad'],
   ['--youtube-url'],
   ['--scan-mode', 'wide'],
-  ['--scan-mode']
+  ['--scan-mode'],
+  ['--url', 'ftp://example.com/stream'],
+  ['--url', '/relative/stream']
 ]) assert.equal(run([...args, ...(args.length === 1 ? [] : ['--help'])]).status, 2);
-console.log('PASS: CLI defaults, scan modes, URL formats, validation, missing value, and explicit-channel conflicts in both orders');
+console.log('PASS: source URL compatibility/validation, scan modes, YouTube URL formats, missing values, and explicit-channel conflicts');

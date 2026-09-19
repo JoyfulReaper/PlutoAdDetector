@@ -1,7 +1,8 @@
 # PlutoAdDetector
 
-A .NET 10 proof of concept that opens Pluto TV in Chromium and watches the
-upper-left portion of the video player for a visible ad indicator. It prefers
+A .NET 10 proof of concept that opens a source/streaming page in Chromium (Pluto
+TV by default) and watches the upper-left portion of its largest video player for
+a visible ad indicator. It prefers
 visible DOM text and accessibility-related attributes (`aria-label`, `title`,
 `role`, and test IDs). Until such an indicator has been observed, it periodically
 saves an upper-left player crop under `captures/` for later visual-detector work.
@@ -33,13 +34,17 @@ uses a dedicated persistent profile under `browser-profile/`, so cookies and
 browser state survive between runs without using or modifying the normal Chrome
 profile. The headed browser remains available for normal interaction. A second
 tab opens a loopback-hosted local page that embeds recent MeidasTouch uploads through
-the YouTube IFrame Player API. When an ad starts, Pluto is muted and the embedded
-player is brought forward and resumed. When the ad ends, it is paused and Pluto
-is brought forward and unmuted. YouTube IFrame API errors are logged after
+the YouTube IFrame Player API. When an ad starts, the source page is muted and the
+embedded player is brought forward and resumed. When the ad ends, it is paused
+and the source page is brought forward and unmuted. YouTube IFrame API errors are logged after
 playback starts.
 
 Use `dotnet run -- --headless` to hide Chromium. Run `dotnet run -- --help` for
-polling, confirmation, Pluto URL, and capture options.
+polling, confirmation, source URL, and capture options. `--url <url>` accepts any
+absolute HTTP or HTTPS streaming-page URL, so the existing browser, mute, and tab
+switching can be tried with other services. The automatic DOM detector profile is
+still Pluto-specific; non-Pluto source URLs produce a warning and should be
+treated as manual experiments rather than claimed detector compatibility.
 
 At startup, the public channel RSS feed supplies recent uploads (no API key).
 If RSS returns an error or malformed content, discovery falls back to the channel's
@@ -61,7 +66,7 @@ current automatic-queue video. The video is considered completed for the run,
 removed from the queue, and the next video follows the current play/pause intent.
 The same operation is available as `window.youtubePlayerControls.skip()`.
 Press `P` in either browser tab to pause or resume ad tracking. Pausing stops ad
-switching, pauses YouTube, brings Pluto forward, and unmutes it. Resuming clears
+switching, pauses YouTube, brings the source page forward, and unmutes it. Resuming clears
 the detector's pending state and confirms the current state from fresh samples;
 neither operation changes the video queue.
 On normal shutdown or Ctrl+C, automatic channel mode saves a versioned snapshot
@@ -91,7 +96,7 @@ dotnet run -- --youtube-url "https://www.youtube.com/watch?v=M7lc1UVf-VE"
 
 This override skips channel discovery, RSS refreshes, and duration filtering,
 including for videos shorter than five minutes. The same video pauses and resumes
-across Pluto ad breaks without reloading. It does not advance to another video
+across detected source ad breaks without reloading. It does not advance to another video
 when it ends. Watch, youtu.be, embed, shorts, and live URLs are supported.
 Do not explicitly supply both `--youtube-url` and `--channel-url`; this is a CLI
 error even if the channel is MeidasTouch. Without either option, the default

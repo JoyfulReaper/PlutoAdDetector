@@ -47,6 +47,12 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     Directory.CreateDirectory(options.CaptureDirectory);
     var browserProfileDirectory = Path.GetFullPath("browser-profile");
     Directory.CreateDirectory(browserProfileDirectory);
+    var sourceUri = new Uri(options.SourceUrl);
+    if (!IsPlutoSource(sourceUri))
+    {
+        Console.Error.WriteLine(
+            $"warning: the current automatic ad detector profile is Pluto-specific and may not work for source URL {options.SourceUrl}");
+    }
     Console.Error.WriteLine($"pluto scan mode: {options.ScanMode.ToString().ToLowerInvariant()}");
     var automaticQueueMode = YoutubeQueueRefreshPolicy.IsAutomaticMode(options.YoutubeVideoId);
     YoutubeUpload[] candidates;
@@ -91,8 +97,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     });
     await context.AddInitScriptAsync(script: AdTrackingShortcut.Script);
 
-    var plutoPage = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
-    await plutoPage.GotoAsync(options.Url, new PageGotoOptions
+    var sourcePage = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
+    await sourcePage.GotoAsync(options.SourceUrl, new PageGotoOptions
     {
         WaitUntil = WaitUntilState.DOMContentLoaded,
         Timeout = 90_000
@@ -114,7 +120,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
         null,
         new PageWaitForFunctionOptions { Timeout = 60_000 });
     await PauseYoutubeAsync(youtubePage);
-    await plutoPage.BringToFrontAsync();
+    await sourcePage.BringToFrontAsync();
     await using var youtubeQueueStateSaver = new YoutubeQueueStateSaver(
         youtubePage,
         Path.GetFullPath("youtube-queue.json"),
@@ -200,8 +206,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 await PauseYoutubeAsync(youtubePage);
                 youtubePlaybackStarted = false;
                 loggedYoutubeError = null;
-                await plutoPage.BringToFrontAsync();
-                await SetPlutoMutedAsync(plutoPage, muted: false);
+                await sourcePage.BringToFrontAsync();
+                await SetSourceMutedAsync(sourcePage, muted: false);
                 Console.WriteLine("ad tracking paused");
             }
             else
@@ -210,7 +216,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             }
         }
 
-        var sample = await DetectAsync(plutoPage, options.ScanMode);
+        var sample = await DetectAsync(sourcePage, options.ScanMode);
         // If P was pressed while detection was running, normalize tracking before
         // this sample can trigger a switch. A resumed loop will take a new sample.
         if (Volatile.Read(ref trackingToggleRequests) > 0)
@@ -240,7 +246,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             if (sample.IsAd)
             {
                 activeDetectionMethod = sample.Method;
-                await SetPlutoMutedAsync(plutoPage, muted: true);
+                await SetSourceMutedAsync(sourcePage, muted: true);
                 await youtubePage.BringToFrontAsync();
                 youtubePlaybackStarted = await ResumeYoutubeAsync(youtubePage);
                 loggedYoutubeError = null;
@@ -253,8 +259,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 await PauseYoutubeAsync(youtubePage);
                 youtubePlaybackStarted = false;
                 loggedYoutubeError = null;
-                await plutoPage.BringToFrontAsync();
-                await SetPlutoMutedAsync(plutoPage, muted: false);
+                await sourcePage.BringToFrontAsync();
+                await SetSourceMutedAsync(sourcePage, muted: false);
                 Console.WriteLine($"ad ended [{sample.Method}]");
                 publishedState = false;
             }
@@ -265,7 +271,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             sample.HasPlayer &&
             DateTimeOffset.UtcNow >= nextCaptureAt)
         {
-            await SaveDiagnosticCropAsync(plutoPage, sample, options.CaptureDirectory);
+            await SaveDiagnosticCropAsync(sourcePage, sample, options.CaptureDirectory);
             nextCaptureAt = DateTimeOffset.UtcNow.Add(options.CaptureInterval);
         }
 
@@ -312,7 +318,11 @@ static string? FindInstalledGoogleChrome()
     return candidates.FirstOrDefault(File.Exists);
 }
 
-static async Task SetPlutoMutedAsync(IPage page, bool muted)
+static bool IsPlutoSource(Uri sourceUri) =>
+    sourceUri.Host.Equals("pluto.tv", StringComparison.OrdinalIgnoreCase) ||
+    sourceUri.Host.EndsWith(".pluto.tv", StringComparison.OrdinalIgnoreCase);
+
+static async Task SetSourceMutedAsync(IPage page, bool muted)
 {
     await page.EvaluateAsync(
         "muted => document.querySelectorAll('video').forEach(video => video.muted = muted)",
@@ -425,7 +435,7 @@ internal static class JsonOptions
 }
 
 internal sealed record DetectorOptions(
-    string Url,
+    string SourceUrl,
     string ChannelUrl,
     string? YoutubeVideoId,
     int MinimumDurationSeconds,
@@ -437,12 +447,12 @@ internal sealed record DetectorOptions(
     PlutoScanMode ScanMode,
     bool ShowHelp)
 {
-    private const string DefaultUrl = "https://pluto.tv/live-tv";
+    private const string DefaultSourceUrl = "https://pluto.tv/live-tv";
 
     internal const string Usage = """
         PlutoAdDetector
           --headless                 Run Chromium without a visible window (headed is the default)
-          --url <url>                Pluto URL (default: https://pluto.tv/live-tv)
+          --url <url>                Source/streaming page URL (default: https://pluto.tv/live-tv)
           --channel-url <url>        YouTube channel (default: https://www.youtube.com/@MeidasTouch)
           --youtube-url <url>        Single video; bypass RSS and duration filtering (exclusive with --channel-url)
           --min-duration-seconds <n> Minimum duration (default: 300)
@@ -456,7 +466,7 @@ internal sealed record DetectorOptions(
 
     internal static DetectorOptions Parse(string[] args)
     {
-        var url = DefaultUrl;
+        var sourceUrl = DefaultSourceUrl;
         var channelUrl = "https://www.youtube.com/@MeidasTouch";
         var channelExplicit = false;
         string? youtubeUrl = null;
@@ -497,7 +507,7 @@ internal sealed record DetectorOptions(
                     minimumDurationSeconds = ParsePositiveInt(NextValue("--min-duration-seconds"), "--min-duration-seconds");
                     break;
                 case "--url":
-                    url = NextValue("--url");
+                    sourceUrl = NextValue("--url");
                     break;
                 case "--poll-ms":
                     pollMilliseconds = ParsePositiveInt(NextValue("--poll-ms"), "--poll-ms");
@@ -527,7 +537,7 @@ internal sealed record DetectorOptions(
             }
         }
 
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+        if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out var uri) ||
             (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
         {
             throw new ArgumentException("--url must be an absolute HTTP or HTTPS URL.");
@@ -542,7 +552,7 @@ internal sealed record DetectorOptions(
             throw new ArgumentException("--youtube-url and --channel-url cannot both be supplied.");
         var youtubeVideoId = youtubeUrl is null ? null : ParseYoutubeVideoId(youtubeUrl);
         return new DetectorOptions(
-            url,
+            sourceUrl,
             channelUrl,
             youtubeVideoId,
             minimumDurationSeconds,
