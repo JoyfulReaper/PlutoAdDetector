@@ -1,48 +1,59 @@
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const source = fs.readFileSync('LocalYoutubePlayerHost.cs', 'utf8');
-const script = source.match(/<script>([\s\S]*?)<\/script>/)[1]
-  .replace('{{candidatesJson}}', JSON.stringify(['short', 'boundary', 'error', 'long']));
-let instance;
+const item = (id, published = 1) => ({ id, title: `Title ${id}`, published: new Date(published * 1000).toISOString() });
+const candidates = ['short', 'boundary', 'error', 'long'].map((id, i) => item(id, 10-i));
+const script = fs.readFileSync('LocalYoutubePlayerHost.cs', 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1]
+  .replace('{{candidatesJson}}', JSON.stringify(candidates)).replace('{{minimumDurationSeconds}}', '300');
+const players = {};
 const logs = [];
-const context = { window: {}, console: { log: value => logs.push(value) },
-  setTimeout: callback => setImmediate(callback),
+const context = { window: { location: { origin: 'http://127.0.0.1:1234' } },
+  console: { log: value => logs.push(value) }, setTimeout: callback => setImmediate(callback),
   YT: { PlayerState: { ENDED: 0, PLAYING: 1 }, Player: class {
-    constructor(id, options) { instance = this; this.events = options.events; this.id = ''; this.playing = false; }
+    constructor(id, options) { players[id] = this; this.events = options.events; this.id = ''; this.playing = false; this.loads = 0; }
     mute() {} unMute() {}
-    loadVideoById(id) { this.id = id; this.playing = true; if (id === 'error') this.events.onError({ data: 150 }); }
-    cueVideoById(id) { this.id = id; this.playing = false; }
+    loadVideoById(id) { this.loads++; this.id = id; this.playing = true; if (id === 'error') this.events.onError({ data: 150 }); }
+    cueVideoById(id) { this.loads++; this.id = id; this.playing = false; }
     getVideoData() { return { video_id: this.id }; }
-    getDuration() { return { short: 299, boundary: 300, long: 600 }[this.id] || 0; }
+    getDuration() { return { short: 299, boundary: 300, error: 0 }[this.id] ?? 600; }
     pauseVideo() { this.playing = false; }
     playVideo() { this.playing = true; }
   } } };
-context.window.location = { origin: 'http://127.0.0.1:1234' };
 vm.runInNewContext(script, context);
 context.window.onYouTubeIframeAPIReady();
-instance.events.onReady();
+players.player.events.onReady(); players.probe.events.onReady();
 const controls = context.window.youtubePlayerControls;
-controls.play();
-controls.pause(); // Ad ends while duration checks are still running.
+async function waitRefresh(count) {
+  for (let i = 0; i < 1000 && logs.filter(x => x.includes('refreshed (')).length < count; i++) await new Promise(setImmediate);
+  assert.equal(logs.filter(x => x.includes('refreshed (')).length, count);
+}
 async function test() {
-  for (let i = 0; i < 100 && !logs.some(x => x.includes('eligible videos')); i++)
-    await new Promise(setImmediate);
-  assert(logs.some(x => x.includes('2 eligible videos')));
-  assert.equal(instance.id, 'boundary');
-  assert.equal(instance.playing, false);
+  controls.play(); controls.pause();
+  await waitRefresh(1);
+  assert.equal(controls.getQueue().videos.length, 2);
+  assert.equal(players.player.id, 'boundary');
+  assert.equal(players.player.playing, false);
+  assert(logs.some(x => x.includes('Title short') && x.includes('299 seconds')));
   controls.play();
-  assert.equal(instance.playing, true);
-  instance.events.onStateChange({ data: 0 });
-  assert.equal(instance.id, 'long');
-  assert.equal(instance.playing, true);
+  const loads = players.player.loads;
+  const additions = Array.from({length: 25}, (_, i) => item(`new${i}`, 100+i));
+  controls.refresh([...additions, ...candidates, additions[0]]);
+  await waitRefresh(2);
+  const queue = controls.getQueue();
+  assert.equal(queue.videos.length, 20);
+  assert.equal(new Set(queue.videos.map(x => x.id)).size, 20);
+  assert.equal(queue.currentId, 'boundary');
+  assert.equal(queue.videos[1].id, 'new24');
+  assert.equal(players.player.loads, loads); // Refresh did not reset position or reload.
+  assert.equal(players.player.playing, true);
+  players.player.events.onStateChange({ data: 0 });
+  assert.equal(players.player.id, 'new24');
   controls.pause();
-  assert.equal(instance.playing, false);
-  controls.play();
-  assert.equal(instance.id, 'long');
-  instance.events.onStateChange({ data: 0 });
-  assert.match(controls.getError(), /exhausted/);
-  assert.equal(controls.play().success, false);
-  console.log('PASS: duration boundary, errors, ordering, pause during preparation, resume, advance, exhaustion');
+  controls.refresh([...additions, ...candidates]);
+  await waitRefresh(3);
+  assert.equal(players.player.playing, false);
+  assert.equal(controls.getQueue().currentId, 'new24');
+  assert(!controls.getQueue().videos.some(x => x.id === 'boundary'));
+  console.log('PASS: duration filtering, skip logs, deduplication, newest-first ordering, cap, current preservation, advancement and pause during refresh');
 }
 test().catch(error => { console.error(error); process.exitCode = 1; });

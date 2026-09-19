@@ -29,11 +29,11 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
 
     internal Uri Url { get; }
 
-    internal static LocalYoutubePlayerHost Start(string[] candidates)
+    internal static LocalYoutubePlayerHost Start(YoutubeUpload[] candidates, int minimumDurationSeconds)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
-        return new LocalYoutubePlayerHost(listener, CreateHtml(candidates));
+        return new LocalYoutubePlayerHost(listener, CreateHtml(candidates, minimumDurationSeconds));
     }
 
 
@@ -98,9 +98,9 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
     }
 
 
-    private static string CreateHtml(string[] candidates)
+    private static string CreateHtml(YoutubeUpload[] candidates, int minimumDurationSeconds)
     {
-        var candidatesJson = JsonSerializer.Serialize(candidates);
+        var candidatesJson = JsonSerializer.Serialize(candidates, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
         return $$"""
             <!doctype html>
             <html lang="en">
@@ -118,64 +118,92 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   background: #000;
                 }
                 #player { display: block; border: 0; }
+                #probe { position: absolute; left: -1000px; top: 0; width: 200px; height: 200px; border: 0; }
               </style>
             </head>
             <body>
               <div id="player"></div>
+              <div id="probe"></div>
               <script>
                 const candidates = {{candidatesJson}};
+                const minimumDuration = {{minimumDurationSeconds}};
+                let probe;
+                let probeReady = false;
                 let player;
                 let ready = false;
                 let lastError = null;
-                const queue = [];
-                let index = -1;
-                let preparing = true;
+                let queue = [];
+                let current = null;
+                const completed = new Set();
+                const durations = new Map();
+                let refreshing = false;
+                let pendingRefresh = null;
                 let wantsPlayback = false;
                 let probeError = null;
                 const log = message => console.log(`youtube queue: ${message}`);
                 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
                 function selectCurrent() {
-                  if (index >= queue.length) {
-                    lastError = 'Queue exhausted; restart to fetch recent uploads.';
+                  current = queue[0] || null;
+                  if (!current) {
+                    lastError = 'Queue empty; waiting for the next feed refresh.';
                     log(lastError);
                     return;
                   }
                   lastError = null;
-                  log(`selected ${queue[index].id} (${Math.round(queue[index].duration)} seconds)`);
+                  log(`selected ${current.title} [${current.id}] (${Math.round(current.duration)} seconds)`);
                   player.unMute();
-                  if (wantsPlayback) player.loadVideoById(queue[index].id);
-                  else player.cueVideoById(queue[index].id);
+                  if (wantsPlayback) player.loadVideoById(current.id);
+                  else player.cueVideoById(current.id);
                 }
 
-                async function prepareQueue() {
-                  for (const id of candidates) {
+                async function refreshQueue(items) {
+                  if (!ready || !probeReady || refreshing) { pendingRefresh = items; return; }
+                  refreshing = true;
+                  try {
+                  const valid = [];
+                  const seen = new Set();
+                  for (const item of [...items].sort((a, b) => Date.parse(b.published) - Date.parse(a.published))) {
+                    const { id, title } = item;
+                    if (seen.has(id) || completed.has(id) || id === current?.id) continue;
+                    seen.add(id);
                     probeError = null;
-                    player.mute();
-                    player.loadVideoById(id);
-                    let duration = 0;
+                    let duration = durations.get(id) || 0;
+                    if (!duration) {
+                    probe.mute();
+                    probe.loadVideoById(id);
                     // Metadata is not available immediately. Verify the loaded ID so a
                     // previous candidate's duration cannot admit a short video.
                     for (let attempt = 0; attempt < 60; attempt++) {
                       await delay(250);
                       if (probeError) break;
-                      if (player.getVideoData().video_id === id) {
-                        duration = player.getDuration();
+                      if (probe.getVideoData().video_id === id) {
+                        duration = probe.getDuration();
                         if (Number.isFinite(duration) && duration > 0) break;
                       }
                     }
-                    player.pauseVideo();
-                    if (!probeError && Number.isFinite(duration) && duration >= 300) {
-                      queue.push({ id, duration });
-                      log(`added ${id} (${Math.round(duration)} seconds)`);
+                    probe.pauseVideo();
+                    if (!probeError && Number.isFinite(duration) && duration > 0) durations.set(id, duration);
+                    }
+                    if (!probeError && Number.isFinite(duration) && duration >= minimumDuration) {
+                      valid.push({ ...item, duration });
                     } else {
-                      log(`skipped ${id}: ${probeError || (duration > 0 ? 'under 5 minutes' : 'duration unavailable')}`);
+                      log(`skipped ${title} [${id}] (${duration > 0 ? Math.round(duration) + ' seconds' : 'duration unknown'}): ${probeError || (duration > 0 ? 'below minimum duration' : 'duration unavailable')}`);
                     }
                   }
-                  preparing = false;
-                  index = 0;
-                  log(`${queue.length} eligible videos, newest first`);
-                  selectCurrent();
+                  // Re-read current/completed after async probing: playback may have advanced.
+                  const merged = new Map([...queue, ...valid].map(item => [item.id, item]));
+                  const waiting = [...merged.values()].filter(item => !completed.has(item.id) && item.id !== current?.id)
+                    .sort((a, b) => Date.parse(b.published) - Date.parse(a.published));
+                  queue = [...(current ? [current] : []), ...waiting].slice(0, 20);
+                  if (!current) selectCurrent();
+                  log(`refreshed (${queue.length}/20): ` + queue.map(item =>
+                    `${item.id === current?.id ? '[current] ' : ''}${item.title} [${item.id}] (${Math.round(item.duration)} seconds)`).join(' | '));
+                  } catch (error) { log(`refresh failed (queue retained): ${error.message || error}`); }
+                  finally {
+                    refreshing = false;
+                    if (pendingRefresh) { const next = pendingRefresh; pendingRefresh = null; void refreshQueue(next); }
+                  }
                 }
 
                 const errorNames = {
@@ -193,8 +221,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                     if (!ready) return { success: false, error: 'YouTube IFrame player is not ready.' };
                     try {
                       wantsPlayback = true;
-                      if (preparing) return { success: true, error: null };
-                      if (index >= queue.length) return { success: false, error: lastError || 'Queue exhausted.' };
+                      if (!current) return { success: true, error: null };
                       lastError = null;
                       player.unMute();
                       player.playVideo();
@@ -207,13 +234,15 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                     wantsPlayback = false;
                     if (!ready) return { success: false, error: 'YouTube IFrame player is not ready.' };
                     try {
-                      if (!preparing) player.pauseVideo();
+                      player.pauseVideo();
                       return { success: true, error: null };
                     } catch (error) {
                       return { success: false, error: `${error?.name || 'Error'}: ${error?.message || String(error)}` };
                     }
                   },
-                  getError: () => lastError
+                  getError: () => lastError,
+                  refresh: items => { void refreshQueue(items); },
+                  getQueue: () => ({ currentId: current?.id || null, videos: queue })
                 };
 
                 window.onYouTubeIframeAPIReady = () => {
@@ -229,18 +258,12 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                     events: {
                       onReady: () => {
                         ready = true;
-                        prepareQueue().catch(error => {
-                          preparing = false;
-                          index = queue.length;
-                          player.pauseVideo();
-                          lastError = `Queue preparation failed: ${error.message || error}`;
-                          log(lastError);
-                        });
+                        void refreshQueue(candidates);
                       },
                       onStateChange: event => {
-                        if (preparing) return;
-                        if (event.data === YT.PlayerState.ENDED && index < queue.length) {
-                          index++;
+                        if (event.data === YT.PlayerState.ENDED && current) {
+                          completed.add(current.id);
+                          queue = queue.filter(item => item.id !== current.id);
                           selectCurrent();
                         } else if (event.data === YT.PlayerState.PLAYING && !wantsPlayback) {
                           player.pauseVideo();
@@ -249,9 +272,22 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                       onError: event => {
                         const detail = errorNames[event.data] || 'Unknown YouTube player error';
                         const message = `YouTube IFrame API error ${event.data}: ${detail}`;
-                        if (preparing) probeError = message;
-                        else lastError = message;
+                        lastError = message;
                       }
+                    }
+                  });
+                  probe = new YT.Player('probe', {
+                    width: '200', height: '200',
+                    playerVars: { autoplay: 0, controls: 0, origin: window.location.origin },
+                    events: {
+                      onReady: () => {
+                        probeReady = true;
+                        probe.mute();
+                        const items = pendingRefresh || candidates;
+                        pendingRefresh = null;
+                        void refreshQueue(items);
+                      },
+                      onError: event => { probeError = `YouTube IFrame API error ${event.data}: ${errorNames[event.data] || 'Unknown error'}`; }
                     }
                   });
                 };

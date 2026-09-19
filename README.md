@@ -38,10 +38,17 @@ Use `dotnet run -- --headless` to hide Chromium. Run `dotnet run -- --help` for
 polling, confirmation, Pluto URL, and capture options.
 
 At startup, the public MeidasTouch RSS feed supplies recent uploads (no API key).
-The IFrame API loads candidates muted to obtain their durations; only videos at
-least 300 seconds long enter the queue, newest first. Unavailable videos and
-metadata timeouts are skipped. Preparation can take several minutes. Playback
-requests during preparation are remembered, and an ad ending cancels that intent.
-The current video resumes between ad breaks and advances when it ends. The queue
-is fetched once per run; exhaustion or RSS failures are logged. Restart to refresh.
+The feed refreshes every five minutes without blocking Pluto detection. A separate
+muted IFrame player checks durations without interrupting the current video.
+The queue holds at most 20 valid videos, retaining the current video and ordering
+waiting videos newest first. Duplicate IDs and videos completed during this run
+are excluded. The current video and its playback position are preserved across
+refreshes and ad breaks; queue state is in memory for the current run.
+Unavailable videos and metadata timeouts are skipped. Logs include skipped titles,
+durations (or “unknown”), and the queue after each successful refresh. RSS failures
+retain the existing queue and retry at the next refresh.
+
+Options: `--channel-url https://www.youtube.com/@MeidasTouch` and
+`--min-duration-seconds 300` (the defaults). Channel URLs may use an @handle or
+`/channel/UC...` ID. No API key is needed.
 The former `--youtube-url` option has been removed.

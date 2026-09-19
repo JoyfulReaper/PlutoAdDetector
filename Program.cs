@@ -47,17 +47,17 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     Directory.CreateDirectory(options.CaptureDirectory);
     var browserProfileDirectory = Path.GetFullPath("browser-profile");
     Directory.CreateDirectory(browserProfileDirectory);
-    string[] candidates;
+    YoutubeUpload[] candidates;
     try
     {
-        candidates = await YoutubeFeed.FetchAsync(cancellationToken);
+        candidates = await YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken);
     }
     catch (Exception exception) when (exception is HttpRequestException or System.Xml.XmlException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
     {
         Console.Error.WriteLine($"youtube RSS failed: {exception.Message}");
         candidates = [];
     }
-    await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(candidates);
+    await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(candidates, options.MinimumDurationSeconds);
 
     using var playwright = await Playwright.CreateAsync();
     var chromeExecutable = FindInstalledGoogleChrome();
@@ -113,9 +113,30 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var youtubePlaybackStarted = false;
     string? loggedYoutubeError = null;
     var nextYoutubeHealthCheckAt = DateTimeOffset.MinValue;
+    var nextFeedRefreshAt = DateTimeOffset.UtcNow.AddMinutes(5);
+    Task<YoutubeUpload[]>? feedRefresh = null;
 
     while (!cancellationToken.IsCancellationRequested)
     {
+        // Fetch asynchronously so slow RSS requests never block ad detection.
+        if (feedRefresh is null && DateTimeOffset.UtcNow >= nextFeedRefreshAt)
+            feedRefresh = YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken);
+        if (feedRefresh?.IsCompleted is true)
+        {
+            try
+            {
+                var uploads = await feedRefresh;
+                await youtubePage.EvaluateAsync("items => { window.youtubePlayerControls.refresh(items); }",
+                    uploads.Select(item => new { id = item.Id, title = item.Title, published = item.Published }).ToArray());
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
+                exception is HttpRequestException or System.Xml.XmlException or TaskCanceledException)
+            {
+                Console.Error.WriteLine($"youtube RSS refresh failed (queue retained): {exception.Message}");
+            }
+            feedRefresh = null;
+            nextFeedRefreshAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        }
         var sample = await DetectAsync(plutoPage);
         everFoundSemanticIndicator |= sample.IsAd;
 
@@ -368,6 +389,8 @@ internal static class JsonOptions
 
 internal sealed record DetectorOptions(
     string Url,
+    string ChannelUrl,
+    int MinimumDurationSeconds,
     bool Headless,
     TimeSpan PollInterval,
     int ConfirmationSamples,
@@ -381,6 +404,8 @@ internal sealed record DetectorOptions(
         PlutoAdDetector
           --headless                 Run Chromium without a visible window (headed is the default)
           --url <url>                Pluto URL (default: https://pluto.tv/live-tv)
+          --channel-url <url>        YouTube channel (default: https://www.youtube.com/@MeidasTouch)
+          --min-duration-seconds <n> Minimum duration (default: 300)
           --poll-ms <milliseconds>   Detection interval (default: 500)
           --confirm <count>          Consecutive samples required for a transition (default: 2)
           --captures <directory>     Visual fallback directory (default: captures)
@@ -391,6 +416,8 @@ internal sealed record DetectorOptions(
     internal static DetectorOptions Parse(string[] args)
     {
         var url = DefaultUrl;
+        var channelUrl = "https://www.youtube.com/@MeidasTouch";
+        var minimumDurationSeconds = 300;
         var headless = false;
         var pollMilliseconds = 500;
         var confirmationSamples = 2;
@@ -414,6 +441,12 @@ internal sealed record DetectorOptions(
             {
                 case "--headless":
                     headless = true;
+                    break;
+                case "--channel-url":
+                    channelUrl = NextValue("--channel-url");
+                    break;
+                case "--min-duration-seconds":
+                    minimumDurationSeconds = ParsePositiveInt(NextValue("--min-duration-seconds"), "--min-duration-seconds");
                     break;
                 case "--url":
                     url = NextValue("--url");
@@ -445,8 +478,14 @@ internal sealed record DetectorOptions(
         }
 
 
+        if (!Uri.TryCreate(channelUrl, UriKind.Absolute, out var channelUri) ||
+            channelUri.Scheme != "https" || channelUri.Host is not ("youtube.com" or "www.youtube.com" or "m.youtube.com") ||
+            !(channelUri.AbsolutePath.StartsWith("/@") || channelUri.AbsolutePath.StartsWith("/channel/")))
+            throw new ArgumentException("--channel-url must be a YouTube HTTPS channel or @handle URL.");
         return new DetectorOptions(
             url,
+            channelUrl,
+            minimumDurationSeconds,
             headless,
             TimeSpan.FromMilliseconds(pollMilliseconds),
             confirmationSamples,
