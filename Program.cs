@@ -55,6 +55,13 @@ finally
 static async Task RunAsync(DetectorOptions options, CancellationToken cancellationToken)
 {
     Directory.CreateDirectory(options.CaptureDirectory);
+    var visualSignaturePath = Path.GetFullPath(VisualSignatureStore.DefaultFileName);
+    var visualSignatureLoad = new VisualSignatureStore(visualSignaturePath).Load();
+    foreach (var warning in visualSignatureLoad.Warnings)
+        Console.Error.WriteLine($"visual signatures: {warning}");
+    if (visualSignatureLoad.Signatures.Count > 0)
+        Console.Error.WriteLine($"visual signatures loaded: {visualSignatureLoad.Signatures.Count} from {visualSignaturePath}");
+
     var browserProfileDirectory = Path.GetFullPath("browser-profile");
     Directory.CreateDirectory(browserProfileDirectory);
     var sourceUri = new Uri(options.SourceUrl);
