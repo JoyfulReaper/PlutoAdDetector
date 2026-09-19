@@ -169,7 +169,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var pendingCount = 0;
     var everFoundSemanticIndicator = false;
     var nextCaptureAt = DateTimeOffset.UtcNow;
-    var youtubePlaybackStarted = false;
+    var youtubePlaybackExpected = false;
     string? loggedYoutubeError = null;
     var nextYoutubeHealthCheckAt = DateTimeOffset.MinValue;
     var queueRefreshPolicy = new YoutubeQueueRefreshPolicy(initialDiscoveryCompletedAt);
@@ -240,8 +240,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 
                 if (trackingPaused)
                 {
+                    youtubePlaybackExpected = false;
                     await PauseYoutubeAsync(youtubePage);
-                    youtubePlaybackStarted = false;
                     loggedYoutubeError = null;
                     await sourcePage.BringToFrontAsync();
                     await SetSourceMutedAsync(sourcePage, muted: false);
@@ -330,7 +330,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 {
                     await SetSourceMutedAsync(sourcePage, muted: true);
                     await youtubePage.BringToFrontAsync();
-                    youtubePlaybackStarted = await ResumeYoutubeAsync(youtubePage);
+                    youtubePlaybackExpected = true;
+                    await ResumeYoutubeAsync(youtubePage);
                     loggedYoutubeError = null;
                     nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow;
                     Console.WriteLine($"ad started [{sample.Method}]");
@@ -338,8 +339,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 }
                 else if (publishedState is true)
                 {
+                    youtubePlaybackExpected = false;
                     await PauseYoutubeAsync(youtubePage);
-                    youtubePlaybackStarted = false;
                     loggedYoutubeError = null;
                     await sourcePage.BringToFrontAsync();
                     await SetSourceMutedAsync(sourcePage, muted: false);
@@ -357,7 +358,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 nextCaptureAt = DateTimeOffset.UtcNow.Add(options.CaptureInterval);
             }
 
-            if (youtubePlaybackStarted && DateTimeOffset.UtcNow >= nextYoutubeHealthCheckAt)
+            if (youtubePlaybackExpected && DateTimeOffset.UtcNow >= nextYoutubeHealthCheckAt)
             {
                 var youtubeError = await DetectYoutubeErrorAsync(youtubePage);
                 if (youtubeError is not null && youtubeError != loggedYoutubeError)
@@ -471,7 +472,7 @@ static async Task PauseYoutubeAsync(IPage page)
         : $"youtube pause failed: {result?.Error ?? "Unknown error."}");
 }
 
-static async Task<bool> ResumeYoutubeAsync(IPage page)
+static async Task ResumeYoutubeAsync(IPage page)
 {
     var json = await page.EvaluateAsync<string>(
         """
@@ -486,7 +487,6 @@ static async Task<bool> ResumeYoutubeAsync(IPage page)
     Console.Error.WriteLine(result?.Success is true
         ? "youtube resumed"
         : $"youtube resume failed: {result?.Error ?? "Unknown error."}");
-    return result?.Success is true;
 }
 
 static async Task<string?> DetectYoutubeErrorAsync(IPage page)

@@ -31,7 +31,7 @@ const context = { window: { location: { origin: 'http://127.0.0.1:1234' }, reque
     getCurrentTime() { return this.position ?? 0; }
     getPlayerState() { return this.playing ? 1 : 2; }
     pauseVideo() { this.playing = false; }
-    playVideo() { this.playing = true; }
+    playVideo() { if (this.playError) throw this.playError; this.playing = true; }
   } } };
 vm.runInNewContext(script, context);
 context.window.onYouTubeIframeAPIReady();
@@ -46,10 +46,13 @@ async function waitLogCount(fragment, count) {
   assert.equal(logs.filter(x => x.includes(fragment)).length, count);
 }
 async function test() {
-  controls.play(); controls.pause();
+  assert.equal(controls.getQueue().currentId, null);
+  assert.equal(controls.play().success, true);
   await waitRefresh(1);
   assert.equal(controls.getQueue().videos.length, 2);
   assert.equal(players.player.id, 'boundary');
+  assert.equal(players.player.playing, true); // Empty-queue playback intent carried into selection.
+  controls.pause();
   assert.equal(players.player.playing, false);
   assert(logs.some(x => x.includes('Title short') && x.includes('299 seconds')));
   assert(logs.some(x => x.includes('Title live [live]') && x.includes('currently live stream')));
@@ -161,6 +164,25 @@ async function test() {
   const beforeIframeSkip = controls.getQueue().currentId;
   messageListeners[0]({ data: 'pluto-ad-detector:skip-youtube-video' });
   assert.notEqual(controls.getQueue().currentId, beforeIframeSkip);
+  const playFailureState = {
+    currentVideo: { id: 'failure0001', title: 'Failure current', playbackPositionSeconds: 0 },
+    queuedVideos: [
+      { id: 'failure0001', title: 'Failure current', durationSeconds: 700 },
+      { id: 'failure0002', title: 'Failure next', durationSeconds: 700 }
+    ],
+    completedOrSkippedVideoIds: []
+  };
+  controls.pause();
+  controls.restoreQueue(playFailureState);
+  players.player.playError = new Error('synthetic play failure');
+  const playFailure = controls.play();
+  assert.equal(playFailure.success, false);
+  assert.equal(playFailure.error, 'YouTube play command failed: Error: synthetic play failure');
+  assert.equal(controls.getError(), playFailure.error);
+  players.player.playError = null;
+  assert.equal(controls.skip().success, true);
+  assert.equal(controls.getQueue().currentId, 'failure0002');
+  assert.equal(players.player.playing, false); // Failed play rolled back wantsPlayback.
   const finalVideoState = {
     currentVideo: { id: 'finalvideo1', title: 'Final video', playbackPositionSeconds: 10 },
     queuedVideos: [{ id: 'finalvideo1', title: 'Final video', durationSeconds: 700 }],
@@ -172,7 +194,7 @@ async function test() {
   assert.equal(controls.skip().success, true);
   assert.equal(controls.getQueue().currentId, null);
   assert.equal(players.player.playing, false);
-  console.log('PASS: queue behavior, stale-refresh discard, N/R shortcuts, H/? help overlay, restore position/order, and playback intent');
+  console.log('PASS: queue behavior, playback intent/failure, stale-refresh discard, N/R shortcuts, H/? help overlay, and restore position/order');
   delete players.probe;
   const singleKeys = [];
   const singleContext = { ...context, window: { location: context.window.location,

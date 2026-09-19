@@ -397,15 +397,20 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   isReady: () => ready,
                   play: () => {
                     if (!ready) return { success: false, error: 'YouTube IFrame player is not ready.' };
+                    if (!current) {
+                      wantsPlayback = true;
+                      return { success: true, error: null };
+                    }
                     try {
                       wantsPlayback = true;
-                      if (!current) return { success: true, error: null };
                       lastError = null;
                       player.unMute();
                       player.playVideo();
                       return { success: true, error: null };
                     } catch (error) {
-                      return { success: false, error: `${error?.name || 'Error'}: ${error?.message || String(error)}` };
+                      wantsPlayback = false;
+                      lastError = `YouTube play command failed: ${error?.name || 'Error'}: ${error?.message || String(error)}`;
+                      return { success: false, error: lastError };
                     }
                   },
                   pause: () => {
