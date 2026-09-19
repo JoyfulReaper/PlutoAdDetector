@@ -205,6 +205,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                 let current = null;
                 const completed = new Set();
                 const durations = new Map();
+                let queueRevision = 0;
                 let refreshing = false;
                 let pendingRefresh = null;
                 let wantsPlayback = false;
@@ -241,12 +242,21 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   else player.cueVideoById(current.id);
                 }
 
-                async function refreshQueue(items) {
+                async function refreshQueue(items, requestedRevision = queueRevision) {
                   if (singleVideoId) return;
-                  if (!ready || !probeReady || refreshing) { pendingRefresh = items; return; }
+                  if (!ready || !probeReady || refreshing) {
+                    pendingRefresh = { items, revision: requestedRevision };
+                    return;
+                  }
+                  if (requestedRevision !== queueRevision) {
+                    log(`discarded stale refresh (revision ${requestedRevision}; current ${queueRevision})`);
+                    return;
+                  }
+                  const refreshRevision = requestedRevision;
                   refreshing = true;
                   try {
                   const valid = [];
+                  const probedDurations = new Map();
                   const seen = new Set();
                   for (const item of items) {
                     const { id, title } = item;
@@ -273,7 +283,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                       }
                     }
                     probe.pauseVideo();
-                    if (!probeError && Number.isFinite(duration) && duration > 0) durations.set(id, duration);
+                    if (!probeError && Number.isFinite(duration) && duration > 0) probedDurations.set(id, duration);
                     }
                     if (!probeError && Number.isFinite(duration) && duration >= minimumDuration) {
                       valid.push({ ...item, duration });
@@ -281,6 +291,11 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                       log(`skipped ${title} [${id}] (${duration > 0 ? Math.round(duration) + ' seconds' : 'duration unknown'}): ${probeError || (duration > 0 ? 'below minimum duration' : 'duration unavailable')}`);
                     }
                   }
+                  if (refreshRevision !== queueRevision) {
+                    log(`discarded stale refresh (revision ${refreshRevision}; current ${queueRevision})`);
+                    return;
+                  }
+                  for (const [id, duration] of probedDurations) durations.set(id, duration);
                   // Re-read current/completed after async probing: playback may have advanced.
                   const retained = queue.filter(item => !valid.some(fresh => fresh.id === item.id));
                   const waiting = [...valid, ...retained]
@@ -293,7 +308,11 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   } catch (error) { log(`refresh failed (queue retained): ${error.message || error}`); }
                   finally {
                     refreshing = false;
-                    if (pendingRefresh) { const next = pendingRefresh; pendingRefresh = null; void refreshQueue(next); }
+                    if (pendingRefresh) {
+                      const next = pendingRefresh;
+                      pendingRefresh = null;
+                      void refreshQueue(next.items, next.revision);
+                    }
                   }
                 }
 
@@ -332,6 +351,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   if (!state || !Array.isArray(state.queuedVideos) || !Array.isArray(state.completedOrSkippedVideoIds))
                     return { success: false, error: 'Saved queue state is invalid.' };
                   try {
+                    queueRevision += 1;
                     const playerState = player.getPlayerState?.();
                     const resumeAfterRestore = playerState === YT.PlayerState.PLAYING ||
                       playerState === YT.PlayerState.BUFFERING ||
@@ -493,9 +513,10 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                       onReady: () => {
                         probeReady = true;
                         probe.mute();
-                        const items = pendingRefresh || (restoredQueueState ? [] : candidates);
+                        const pending = pendingRefresh;
                         pendingRefresh = null;
-                        if (items.length) void refreshQueue(items);
+                        if (pending) void refreshQueue(pending.items, pending.revision);
+                        else if (!restoredQueueState && candidates.length) void refreshQueue(candidates);
                       },
                       onError: event => { probeError = `YouTube IFrame API error ${event.data}: ${errorNames[event.data] || 'Unknown error'}`; }
                     }

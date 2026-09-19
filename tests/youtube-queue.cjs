@@ -41,6 +41,10 @@ async function waitRefresh(count) {
   for (let i = 0; i < 1000 && logs.filter(x => x.includes('refreshed (')).length < count; i++) await new Promise(setImmediate);
   assert.equal(logs.filter(x => x.includes('refreshed (')).length, count);
 }
+async function waitLogCount(fragment, count) {
+  for (let i = 0; i < 1000 && logs.filter(x => x.includes(fragment)).length < count; i++) await new Promise(setImmediate);
+  assert.equal(logs.filter(x => x.includes(fragment)).length, count);
+}
 async function test() {
   controls.play(); controls.pause();
   await waitRefresh(1);
@@ -125,6 +129,35 @@ async function test() {
     currentVideo: { ...restoredState.currentVideo, playbackPositionSeconds: 84 } }).success, true);
   assert.equal(players.player.position, 84);
   assert.equal(players.player.playing, true);
+
+  const staleCandidate = item('stalevid001');
+  const stalePendingCandidate = item('stalevid002');
+  const staleLoadsBefore = players.probe.loadedIds.filter(id => id === staleCandidate.id).length;
+  controls.refresh([staleCandidate]);
+  controls.refresh([stalePendingCandidate]);
+  const raceRestoreState = {
+    currentVideo: { id: 'racecur0001', title: 'Race restored current', playbackPositionSeconds: 12 },
+    queuedVideos: [
+      { id: 'racecur0001', title: 'Race restored current', durationSeconds: 710 },
+      { id: 'racenxt0001', title: 'Race restored next', durationSeconds: 720 }
+    ],
+    completedOrSkippedVideoIds: ['racedon0001']
+  };
+  assert.equal(controls.restoreQueue(raceRestoreState).success, true);
+  await waitLogCount('discarded stale refresh', 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(controls.getQueue().videos.map(video => video.id))),
+    ['racecur0001', 'racenxt0001']);
+  assert.deepEqual(JSON.parse(JSON.stringify(controls.getQueueState().completedOrSkippedVideoIds)), ['racedon0001']);
+  assert.equal(players.probe.loadedIds.filter(id => id === staleCandidate.id).length, staleLoadsBefore + 1);
+  assert.equal(players.probe.loadedIds.includes(stalePendingCandidate.id), false);
+
+  // The stale probe must not leak its duration into the restored generation.
+  controls.refresh([staleCandidate]);
+  await waitRefresh(4);
+  assert.equal(players.probe.loadedIds.filter(id => id === staleCandidate.id).length, staleLoadsBefore + 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(controls.getQueue().videos.map(video => video.id))),
+    ['racecur0001', 'stalevid001', 'racenxt0001']);
+
   const beforeIframeSkip = controls.getQueue().currentId;
   messageListeners[0]({ data: 'pluto-ad-detector:skip-youtube-video' });
   assert.notEqual(controls.getQueue().currentId, beforeIframeSkip);
@@ -139,7 +172,7 @@ async function test() {
   assert.equal(controls.skip().success, true);
   assert.equal(controls.getQueue().currentId, null);
   assert.equal(players.player.playing, false);
-  console.log('PASS: queue behavior, N/R shortcuts, H/? help overlay, restore position/order, and playback intent');
+  console.log('PASS: queue behavior, stale-refresh discard, N/R shortcuts, H/? help overlay, restore position/order, and playback intent');
   delete players.probe;
   const singleKeys = [];
   const singleContext = { ...context, window: { location: context.window.location,
