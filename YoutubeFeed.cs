@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
-internal sealed record YoutubeUpload(string Id, string Title);
+internal sealed record YoutubeUpload(string Id, string Title, string? AutomaticSkipReason = null);
 internal sealed record YoutubeDiscovery(YoutubeUpload[] Uploads, string Source);
 
 internal static class YoutubeFeed
@@ -59,6 +59,11 @@ internal static class YoutubeFeed
                 var uploads = ParseRss(xml);
                 if (uploads.Length == 0)
                     throw new InvalidDataException("RSS contained no valid video entries.");
+                uploads = await AddChannelPageStateAsync(
+                    uploads,
+                    channelUrl,
+                    client,
+                    cancellationToken);
                 Console.Error.WriteLine($"youtube discovery: RSS ({uploads.Length} uploads)");
                 return new YoutubeDiscovery(uploads, "RSS");
             }
@@ -134,6 +139,32 @@ internal static class YoutubeFeed
         var seen = new HashSet<string>(StringComparer.Ordinal);
         Visit(document.RootElement, uploads, seen);
         return uploads.ToArray();
+    }
+
+    private static async Task<YoutubeUpload[]> AddChannelPageStateAsync(
+        YoutubeUpload[] rssUploads,
+        string channelUrl,
+        HttpClient client,
+        CancellationToken cancellationToken)
+    {
+        var videosUrl = VideosUrl(channelUrl);
+        Console.Error.WriteLine($"youtube channel metadata: fetching {videosUrl}");
+        try
+        {
+            var html = await GetRequiredTextAsync(client, videosUrl, cancellationToken);
+            var pageUploads = VideosFromHtml(html);
+            var byId = pageUploads.ToDictionary(video => video.Id, StringComparer.Ordinal);
+            return rssUploads.Select(video => byId.TryGetValue(video.Id, out var pageVideo)
+                    ? video with { AutomaticSkipReason = pageVideo.AutomaticSkipReason }
+                    : video)
+                .ToArray();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // RSS remains usable when optional state enrichment is unavailable.
+            Console.Error.WriteLine($"youtube channel metadata unavailable; using RSS candidates: {exception.Message}");
+            return rssUploads;
+        }
     }
 
     private static YoutubeUpload[] ParseRss(string xml)
@@ -292,7 +323,10 @@ internal static class YoutubeFeed
                     .Select(run => run.TryGetProperty("text", out var text) ? text.GetString() : null));
         }
         title = Regex.Replace(title, @"\s+", " ").Trim();
-        uploads.Add(new YoutubeUpload(id, title.Length == 0 ? "Untitled" : title));
+        uploads.Add(new YoutubeUpload(
+            id,
+            title.Length == 0 ? "Untitled" : title,
+            AutomaticSkipReason(renderer)));
     }
 
     private static void AddLockup(
@@ -315,7 +349,82 @@ internal static class YoutubeFeed
             title = content.GetString() ?? title;
         }
         title = Regex.Replace(title, @"\s+", " ").Trim();
-        uploads.Add(new YoutubeUpload(id, title.Length == 0 ? "Untitled" : title));
+        uploads.Add(new YoutubeUpload(
+            id,
+            title.Length == 0 ? "Untitled" : title,
+            AutomaticSkipReason(lockup)));
+    }
+
+    private static string? AutomaticSkipReason(JsonElement renderer)
+    {
+        var statusText = new List<string>();
+        var currentlyLive = false;
+        var upcoming = false;
+        CollectStatus(renderer, "", statusText, ref currentlyLive, ref upcoming);
+        var status = string.Join(" ", statusText).ToLowerInvariant();
+
+        var premiere = Regex.IsMatch(status, @"\bpremiere(?:s|d)?\b");
+        var completedPremiere = Regex.IsMatch(status, @"\bpremiered\b.*\bago\b");
+        if (upcoming || Regex.IsMatch(status,
+                @"\b(upcoming|scheduled for|waiting for|premieres? (?:in|on|at))\b"))
+            return premiere ? "upcoming/scheduled premiere" : "upcoming/scheduled live stream";
+        if (currentlyLive || Regex.IsMatch(status,
+                @"\b(live|live now|currently live|watching now|watching)\b"))
+            return premiere ? "premiere currently live" : "currently live stream";
+        if (Regex.IsMatch(status, @"\bstreamed\b"))
+            return "live stream recording";
+        if (premiere && !completedPremiere)
+            return "premiere not yet completed";
+
+        // "Premiered ... ago" has become a normal completed video and is allowed.
+        return null;
+    }
+
+    private static void CollectStatus(
+        JsonElement element,
+        string path,
+        List<string> statusText,
+        ref bool currentlyLive,
+        ref bool upcoming)
+    {
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var child in element.EnumerateArray())
+                CollectStatus(child, path, statusText, ref currentlyLive, ref upcoming);
+            return;
+        }
+        if (element.ValueKind != JsonValueKind.Object) return;
+
+        foreach (var property in element.EnumerateObject())
+        {
+            var name = property.Name.ToLowerInvariant();
+            var childPath = path.Length == 0 ? name : $"{path}.{name}";
+            if (name == "upcomingeventdata") upcoming = true;
+            if (property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                if (property.Value.GetBoolean() && name is "isupcoming" or "upcoming") upcoming = true;
+                if (property.Value.GetBoolean() && name is "islive" or "islivenow" or "live") currentlyLive = true;
+            }
+            else if (property.Value.ValueKind == JsonValueKind.String)
+            {
+                var value = property.Value.GetString() ?? "";
+                if (name is "style" or "badgestyle")
+                {
+                    if (value.Contains("UPCOMING", StringComparison.OrdinalIgnoreCase)) upcoming = true;
+                    if (value.Contains("LIVE", StringComparison.OrdinalIgnoreCase)) currentlyLive = true;
+                }
+                if (childPath.Contains("badge", StringComparison.Ordinal) ||
+                    childPath.Contains("thumbnailoverlay", StringComparison.Ordinal) ||
+                    childPath.Contains("viewcounttext", StringComparison.Ordinal) ||
+                    childPath.Contains("publishedtimetext", StringComparison.Ordinal) ||
+                    childPath.Contains("upcomingeventdata", StringComparison.Ordinal) ||
+                    childPath.Contains("metadatarows", StringComparison.Ordinal))
+                {
+                    statusText.Add(value);
+                }
+            }
+            CollectStatus(property.Value, childPath, statusText, ref currentlyLive, ref upcoming);
+        }
     }
 
     private static bool IsVideoId(string value) =>

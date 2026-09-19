@@ -129,7 +129,12 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             {
                 var discovery = await feedRefresh;
                 await youtubePage.EvaluateAsync("items => { window.youtubePlayerControls.refresh(items); }",
-                    discovery.Uploads.Select(item => new { id = item.Id, title = item.Title }).ToArray());
+                    discovery.Uploads.Select(item => new
+                    {
+                        id = item.Id,
+                        title = item.Title,
+                        automaticSkipReason = item.AutomaticSkipReason
+                    }).ToArray());
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
                 exception is HttpRequestException or System.Xml.XmlException or TaskCanceledException)

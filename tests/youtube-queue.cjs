@@ -2,7 +2,8 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const item = (id, published = 1) => ({ id, title: `Title ${id}`, published: new Date(published * 1000).toISOString() });
-const candidates = ['short', 'boundary', 'error', 'long'].map((id, i) => item(id, 10-i));
+const candidates = [item('short', 10), { ...item('live', 9), automaticSkipReason: 'currently live stream' },
+  item('boundary', 8), item('error', 7), item('long', 6)];
 const script = fs.readFileSync('LocalYoutubePlayerHost.cs', 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1]
   .replace('{{candidatesJson}}', JSON.stringify(candidates)).replace('{{minimumDurationSeconds}}', '300')
   .replace('{{JsonSerializer.Serialize(singleVideoId)}}', 'null');
@@ -11,9 +12,9 @@ const logs = [];
 const context = { window: { location: { origin: 'http://127.0.0.1:1234' } },
   console: { log: value => logs.push(value) }, setTimeout: callback => setImmediate(callback),
   YT: { PlayerState: { ENDED: 0, PLAYING: 1 }, Player: class {
-    constructor(id, options) { players[id] = this; this.events = options.events; this.id = ''; this.playing = false; this.loads = 0; }
+    constructor(id, options) { players[id] = this; this.events = options.events; this.id = ''; this.playing = false; this.loads = 0; this.loadedIds = []; }
     mute() {} unMute() {}
-    loadVideoById(id) { this.loads++; this.metadataReads = 0; this.id = id; this.playing = true; if (id === 'error') this.events.onError({ data: 150 }); }
+    loadVideoById(id) { this.loads++; this.loadedIds.push(id); this.metadataReads = 0; this.id = id; this.playing = true; if (id === 'error') this.events.onError({ data: 150 }); }
     cueVideoById(id) { this.loads++; this.id = id; this.playing = false; }
     getVideoData() { return this.metadataReads++ === 0 ? undefined : { video_id: this.id }; }
     getDuration() { return { short: 299, boundary: 300, error: 0 }[this.id] ?? 600; }
@@ -35,6 +36,8 @@ async function test() {
   assert.equal(players.player.id, 'boundary');
   assert.equal(players.player.playing, false);
   assert(logs.some(x => x.includes('Title short') && x.includes('299 seconds')));
+  assert(logs.some(x => x.includes('Title live [live]') && x.includes('currently live stream')));
+  assert(!players.probe.loadedIds.includes('live'));
   controls.play();
   const loads = players.player.loads;
   const additions = Array.from({length: 25}, (_, i) => item(`new${i}`, 100+i));

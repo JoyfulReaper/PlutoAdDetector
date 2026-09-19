@@ -169,6 +169,10 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                     const { id, title } = item;
                     if (seen.has(id) || completed.has(id) || id === current?.id) continue;
                     seen.add(id);
+                    if (item.automaticSkipReason) {
+                      log(`skipped ${title} [${id}] (duration not checked): ${item.automaticSkipReason}`);
+                      continue;
+                    }
                     probeError = null;
                     let duration = durations.get(id) || 0;
                     if (!duration) {
