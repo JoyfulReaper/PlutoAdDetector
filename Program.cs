@@ -55,10 +55,27 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     }
     Console.Error.WriteLine($"pluto scan mode: {options.ScanMode.ToString().ToLowerInvariant()}");
     var automaticQueueMode = YoutubeQueueRefreshPolicy.IsAutomaticMode(options.YoutubeVideoId);
+    var queueStatePath = Path.GetFullPath("youtube-queue.json");
+    YoutubeQueueBrowserState? startupQueueState = null;
+    if (options.Resume)
+    {
+        var restoreResult = automaticQueueMode
+            ? YoutubeQueueStateLoader.Load(
+                queueStatePath,
+                options.ChannelUrl,
+                options.MinimumDurationSeconds,
+                DateTimeOffset.UtcNow)
+            : new YoutubeQueueRestoreResult(
+                YoutubeQueueRestoreStatus.Skipped,
+                "--resume is unavailable in --youtube-url single-video mode",
+                null);
+        LogYoutubeQueueRestoreResult(restoreResult);
+        startupQueueState = restoreResult.BrowserState;
+    }
     YoutubeUpload[] candidates;
     try
     {
-        candidates = automaticQueueMode
+        candidates = automaticQueueMode && startupQueueState is null
             ? (await YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken)).Uploads
             : [];
     }
@@ -68,7 +85,11 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
         candidates = [];
     }
     var initialDiscoveryCompletedAt = DateTimeOffset.UtcNow;
-    await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(candidates, options.MinimumDurationSeconds, options.YoutubeVideoId);
+    await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(
+        candidates,
+        options.MinimumDurationSeconds,
+        options.YoutubeVideoId,
+        startupQueueState);
 
     using var playwright = await Playwright.CreateAsync();
     var chromeExecutable = FindInstalledGoogleChrome();
@@ -91,6 +112,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     Console.Error.WriteLine($"browser profile: {browserProfileDirectory}");
 
     var trackingToggleRequests = 0;
+    var queueRestoreRequests = 0;
     await context.ExposeFunctionAsync("requestAdTrackingToggle", () =>
     {
         Interlocked.Increment(ref trackingToggleRequests);
@@ -105,6 +127,10 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     });
 
     var youtubePage = await context.NewPageAsync();
+    await youtubePage.ExposeFunctionAsync("requestYoutubeQueueRestore", () =>
+    {
+        Interlocked.Increment(ref queueRestoreRequests);
+    });
     youtubePage.Console += (_, message) =>
     {
         if (message.Text.StartsWith("youtube queue:", StringComparison.Ordinal))
@@ -123,7 +149,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     await sourcePage.BringToFrontAsync();
     await using var youtubeQueueStateSaver = new YoutubeQueueStateSaver(
         youtubePage,
-        Path.GetFullPath("youtube-queue.json"),
+        queueStatePath,
         options.ChannelUrl,
         options.MinimumDurationSeconds,
         options.YoutubeVideoId);
@@ -216,6 +242,52 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             }
         }
 
+        if (Interlocked.Exchange(ref queueRestoreRequests, 0) > 0)
+        {
+            if (!automaticQueueMode)
+            {
+                Console.Error.WriteLine("youtube queue restore skipped: R is unavailable in --youtube-url single-video mode");
+            }
+            else
+            {
+                try
+                {
+                    var youtubeForegrounded = await youtubePage.EvaluateAsync<bool>(
+                        "() => document.visibilityState === 'visible'");
+                    if (!YoutubeQueueRestoreAccess.CanReload(trackingPaused, youtubeForegrounded))
+                    {
+                        Console.Error.WriteLine(
+                            "youtube queue restore skipped: R is allowed only while ad tracking is paused or YouTube is foregrounded");
+                    }
+                    else
+                    {
+                        var restoreResult = YoutubeQueueStateLoader.Load(
+                            queueStatePath,
+                            options.ChannelUrl,
+                            options.MinimumDurationSeconds,
+                            DateTimeOffset.UtcNow);
+                        if (restoreResult.Status == YoutubeQueueRestoreStatus.Succeeded &&
+                            restoreResult.BrowserState is not null)
+                        {
+                            var applyResult = await ApplyYoutubeQueueRestoreAsync(youtubePage, restoreResult.BrowserState);
+                            if (applyResult.Success)
+                                LogYoutubeQueueRestoreResult(restoreResult);
+                            else
+                                Console.Error.WriteLine($"youtube queue restore failed: {applyResult.Error ?? "Unknown player error."}");
+                        }
+                        else
+                        {
+                            LogYoutubeQueueRestoreResult(restoreResult);
+                        }
+                    }
+                }
+                catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                    Console.Error.WriteLine($"youtube queue restore failed: {exception.Message}");
+                }
+            }
+        }
+
         var sample = await DetectAsync(sourcePage, options.ScanMode);
         // If P was pressed while detection was running, normalize tracking before
         // this sample can trigger a switch. A resumed loop will take a new sample.
@@ -301,6 +373,32 @@ static async Task<int> GetYoutubeQueueRemainingCountAsync(IPage page)
           return queuedVideos.length;
         }
         """);
+}
+
+static async Task<YoutubeControlResult> ApplyYoutubeQueueRestoreAsync(
+    IPage page,
+    YoutubeQueueBrowserState browserState)
+{
+    var stateJson = YoutubeQueueStateSerializer.SerializeBrowserState(browserState);
+    var resultJson = await page.EvaluateAsync<string>(
+        """
+        stateJson => {
+          const controls = window.youtubePlayerControls;
+          return JSON.stringify(controls
+            ? controls.restoreQueue(JSON.parse(stateJson))
+            : { success: false, error: 'Local YouTube player controls are unavailable.' });
+        }
+        """,
+        stateJson);
+    return JsonSerializer.Deserialize<YoutubeControlResult>(resultJson, JsonOptions.Instance)
+        ?? new YoutubeControlResult(false, "Local YouTube player returned no restore result.");
+}
+
+static void LogYoutubeQueueRestoreResult(YoutubeQueueRestoreResult result)
+{
+    var status = result.Status.ToString().ToLowerInvariant();
+    var prefix = result.IsWarning ? "warning: " : "";
+    Console.Error.WriteLine($"{prefix}youtube queue restore {status}: {result.Reason}");
 }
 
 static string? FindInstalledGoogleChrome()
@@ -445,6 +543,7 @@ internal sealed record DetectorOptions(
     string CaptureDirectory,
     TimeSpan CaptureInterval,
     PlutoScanMode ScanMode,
+    bool Resume,
     bool ShowHelp)
 {
     private const string DefaultSourceUrl = "https://pluto.tv/live-tv";
@@ -459,6 +558,7 @@ internal sealed record DetectorOptions(
           --poll-ms <milliseconds>   Detection interval (default: 500)
           --confirm <count>          Consecutive samples required for a transition (default: 2)
           --scan-mode focused|full  DOM scan scope (default: focused; full scans the whole document)
+          --resume                   Restore automatic queue state from youtube-queue.json
           --captures <directory>     Visual fallback directory (default: captures)
           --capture-seconds <count>  Seconds between fallback crops (default: 30)
           --help                     Show this help on standard error
@@ -477,6 +577,7 @@ internal sealed record DetectorOptions(
         var captureDirectory = Path.GetFullPath("captures");
         var captureSeconds = 30;
         var scanMode = PlutoScanMode.Focused;
+        var resume = false;
         var showHelp = false;
 
         for (var index = 0; index < args.Length; index++)
@@ -523,6 +624,9 @@ internal sealed record DetectorOptions(
                         _ => throw new ArgumentException("--scan-mode must be focused or full.")
                     };
                     break;
+                case "--resume":
+                    resume = true;
+                    break;
                 case "--captures":
                     captureDirectory = Path.GetFullPath(NextValue("--captures"));
                     break;
@@ -562,6 +666,7 @@ internal sealed record DetectorOptions(
             captureDirectory,
             TimeSpan.FromSeconds(captureSeconds),
             scanMode,
+            resume,
             showHelp);
     }
 

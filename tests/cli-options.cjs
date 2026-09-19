@@ -10,6 +10,8 @@ assert.equal(run(['--help']).status, 0);
 assert.match(run(['--help']).stderr, /--scan-mode focused\|full/);
 assert.equal(run(['--scan-mode', 'focused', '--help']).status, 0);
 assert.equal(run(['--scan-mode', 'full', '--help']).status, 0);
+assert.equal(run(['--resume', '--help']).status, 0);
+assert.match(run(['--help']).stderr, /--resume/);
 assert.equal(run(['--url', 'https://example.com/stream', '--help']).status, 0);
 assert.equal(run(['--channel-url', channel, '--help']).status, 0);
 for (const args of [

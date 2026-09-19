@@ -6,27 +6,30 @@ const candidates = [item('short', 10), { ...item('live', 9), automaticSkipReason
   item('boundary', 8), item('error', 7), item('long', 6)];
 const script = fs.readFileSync('LocalYoutubePlayerHost.cs', 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1]
   .replace('{{candidatesJson}}', JSON.stringify(candidates)).replace('{{minimumDurationSeconds}}', '300')
-  .replace('{{JsonSerializer.Serialize(singleVideoId)}}', 'null');
+  .replace('{{JsonSerializer.Serialize(singleVideoId)}}', 'null')
+  .replace('{{restoredQueueStateJson}}', 'null');
 const players = {};
 const logs = [];
 const keyListeners = [];
 const messageListeners = [];
+let restoreRequests = 0;
 const helpChanges = [];
 const helpOverlay = {
   classList: { add: value => helpChanges.push(`add:${value}`), remove: value => helpChanges.push(`remove:${value}`) },
   setAttribute: (name, value) => helpChanges.push(`${name}:${value}`)
 };
-const context = { window: { location: { origin: 'http://127.0.0.1:1234' }, addEventListener: (type, listener) => { if (type === 'keydown') keyListeners.push(listener); if (type === 'message') messageListeners.push(listener); } },
+const context = { window: { location: { origin: 'http://127.0.0.1:1234' }, requestYoutubeQueueRestore: () => { restoreRequests++; }, addEventListener: (type, listener) => { if (type === 'keydown') keyListeners.push(listener); if (type === 'message') messageListeners.push(listener); } },
   document: { getElementById: id => id === 'keyboard-help' ? helpOverlay : null },
   console: { log: value => logs.push(value) }, setTimeout: callback => setImmediate(callback), clearTimeout: () => {},
-  YT: { PlayerState: { ENDED: 0, PLAYING: 1 }, Player: class {
+  YT: { PlayerState: { ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3 }, Player: class {
     constructor(id, options) { players[id] = this; this.events = options.events; this.id = ''; this.playing = false; this.loads = 0; this.loadedIds = []; }
     mute() {} unMute() {}
-    loadVideoById(id) { this.loads++; this.loadedIds.push(id); this.metadataReads = 0; this.id = id; this.playing = true; if (id === 'error') this.events.onError({ data: 150 }); }
-    cueVideoById(id) { this.loads++; this.id = id; this.playing = false; }
+    loadVideoById(request) { const { id, position } = videoRequest(request); this.loads++; this.loadedIds.push(id); this.metadataReads = 0; this.id = id; this.position = position; this.playing = true; if (id === 'error') this.events.onError({ data: 150 }); }
+    cueVideoById(request) { const { id, position } = videoRequest(request); this.loads++; this.id = id; this.position = position; this.playing = false; }
     getVideoData() { return this.metadataReads++ === 0 ? undefined : { video_id: this.id }; }
     getDuration() { return { short: 299, boundary: 300, error: 0 }[this.id] ?? 600; }
     getCurrentTime() { return this.position ?? 0; }
+    getPlayerState() { return this.playing ? 1 : 2; }
     pauseVideo() { this.playing = false; }
     playVideo() { this.playing = true; }
   } } };
@@ -90,6 +93,10 @@ async function test() {
   messageListeners[0]({ data: 'pluto-ad-detector:show-youtube-help' });
   await new Promise(setImmediate);
   assert.equal(helpChanges.filter(x => x === 'add:visible').length, 3);
+  keyListeners[0]({ code: 'KeyR', key: 'r', repeat: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {} });
+  messageListeners[0]({ data: 'pluto-ad-detector:reload-youtube-queue' });
+  assert.equal(restoreRequests, 2);
   players.player.position = 17.5;
   const saved = controls.getQueueState();
   assert.deepEqual(JSON.parse(JSON.stringify(saved.currentVideo)), {
@@ -98,7 +105,27 @@ async function test() {
   assert.equal(saved.queuedVideos[0].id, 'new1');
   assert.equal(saved.queuedVideos[0].durationSeconds, 600);
   assert.deepEqual([...saved.completedOrSkippedVideoIds], ['boundary', 'new0']);
-  console.log('PASS: queue behavior, N shortcut, H/? help overlay, advancement and pause intent');
+  const restoredState = {
+    currentVideo: { id: 'restore0001', title: 'Restored current title', playbackPositionSeconds: 42.5 },
+    queuedVideos: [
+      { id: 'restore0001', title: 'Restored current', durationSeconds: 700 },
+      { id: 'restore0002', title: 'Restored next', durationSeconds: 800 }
+    ],
+    completedOrSkippedVideoIds: ['restore0003']
+  };
+  controls.pause();
+  assert.equal(controls.restoreQueue(restoredState).success, true);
+  assert.equal(players.player.id, 'restore0001');
+  assert.equal(controls.getQueue().videos[0].title, 'Restored current title');
+  assert.equal(players.player.position, 42.5);
+  assert.equal(players.player.playing, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(controls.getQueue().videos.map(video => video.id))), ['restore0001', 'restore0002']);
+  controls.play();
+  assert.equal(controls.restoreQueue({ ...restoredState,
+    currentVideo: { ...restoredState.currentVideo, playbackPositionSeconds: 84 } }).success, true);
+  assert.equal(players.player.position, 84);
+  assert.equal(players.player.playing, true);
+  console.log('PASS: queue behavior, N/R shortcuts, H/? help overlay, restore position/order, and playback intent');
   delete players.probe;
   const singleKeys = [];
   const singleContext = { ...context, window: { location: context.window.location,
@@ -121,6 +148,7 @@ async function test() {
   assert.equal(single.getQueue().videos.length, 1);
   assert.equal(players.player.loads, singleLoads);
   assert.equal(single.skip().success, false);
+  assert.equal(single.restoreQueue(restoredState).success, false);
   singleKeys[0]({ code: 'KeyN', repeat: false, ctrlKey: false, altKey: false, metaKey: false, preventDefault() {} });
   assert.equal(single.getQueue().currentId, 'short');
   assert.equal(players.player.loads, singleLoads);
@@ -128,3 +156,9 @@ async function test() {
   console.log('PASS: single-video override bypasses probing/refresh/skip and preserves pause/resume and video selection');
 }
 test().catch(error => { console.error(error); process.exitCode = 1; });
+
+function videoRequest(request) {
+  return typeof request === 'string'
+    ? { id: request, position: 0 }
+    : { id: request.videoId, position: request.startSeconds || 0 };
+}

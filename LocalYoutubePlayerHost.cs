@@ -29,11 +29,15 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
 
     internal Uri Url { get; }
 
-    internal static LocalYoutubePlayerHost Start(YoutubeUpload[] candidates, int minimumDurationSeconds, string? singleVideoId = null)
+    internal static LocalYoutubePlayerHost Start(
+        YoutubeUpload[] candidates,
+        int minimumDurationSeconds,
+        string? singleVideoId = null,
+        YoutubeQueueBrowserState? restoredQueueState = null)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
-        return new LocalYoutubePlayerHost(listener, CreateHtml(candidates, minimumDurationSeconds, singleVideoId));
+        return new LocalYoutubePlayerHost(listener, CreateHtml(candidates, minimumDurationSeconds, singleVideoId, restoredQueueState));
     }
 
 
@@ -98,9 +102,16 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
     }
 
 
-    private static string CreateHtml(YoutubeUpload[] candidates, int minimumDurationSeconds, string? singleVideoId)
+    private static string CreateHtml(
+        YoutubeUpload[] candidates,
+        int minimumDurationSeconds,
+        string? singleVideoId,
+        YoutubeQueueBrowserState? restoredQueueState)
     {
         var candidatesJson = JsonSerializer.Serialize(candidates, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        var restoredQueueStateJson = restoredQueueState is null
+            ? "null"
+            : YoutubeQueueStateSerializer.SerializeBrowserState(restoredQueueState);
         return $$"""
             <!doctype html>
             <html lang="en">
@@ -142,11 +153,13 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
               <div id="keyboard-help" role="status" aria-live="polite" aria-hidden="true">
                 <div>N = next video</div>
                 <div>P = pause/resume ad tracking</div>
+                <div>R = reload saved queue</div>
               </div>
               <script>
                 const candidates = {{candidatesJson}};
                 const minimumDuration = {{minimumDurationSeconds}};
                 const singleVideoId = {{JsonSerializer.Serialize(singleVideoId)}};
+                const restoredQueueState = {{restoredQueueStateJson}};
                 let probe;
                 let probeReady = false;
                 let player;
@@ -276,6 +289,53 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   return { success: true, error: null };
                 }
 
+                function restoreQueue(state) {
+                  if (singleVideoId) return { success: false, error: 'Queue restore is unavailable in single-video mode.' };
+                  if (!ready) return { success: false, error: 'YouTube IFrame player is not ready.' };
+                  if (!state || !Array.isArray(state.queuedVideos) || !Array.isArray(state.completedOrSkippedVideoIds))
+                    return { success: false, error: 'Saved queue state is invalid.' };
+                  try {
+                    const playerState = player.getPlayerState?.();
+                    const resumeAfterRestore = playerState === YT.PlayerState.PLAYING ||
+                      playerState === YT.PlayerState.BUFFERING ||
+                      (playerState === undefined && wantsPlayback);
+                    wantsPlayback = resumeAfterRestore;
+                    completed.clear();
+                    for (const id of state.completedOrSkippedVideoIds) completed.add(id);
+                    durations.clear();
+                    const seen = new Set();
+                    queue = state.queuedVideos
+                      .filter(item => item && !seen.has(item.id) && !completed.has(item.id) && seen.add(item.id))
+                      .map(item => {
+                        durations.set(item.id, item.durationSeconds);
+                        return { id: item.id, title: item.title, duration: item.durationSeconds };
+                      });
+                    const savedCurrent = state.currentVideo;
+                    current = savedCurrent ? queue.find(item => item.id === savedCurrent.id) || null : null;
+                    if (current) {
+                      current = { ...current, title: savedCurrent.title };
+                      queue = [current, ...queue.filter(item => item.id !== current.id)];
+                    }
+                    else if (queue.length) current = queue[0];
+
+                    lastError = current ? null : 'Queue empty; waiting for the next feed refresh.';
+                    if (current) {
+                      const startSeconds = Number.isFinite(savedCurrent?.playbackPositionSeconds)
+                        ? Math.max(0, savedCurrent.playbackPositionSeconds)
+                        : 0;
+                      player.unMute();
+                      const request = { videoId: current.id, startSeconds };
+                      if (resumeAfterRestore) player.loadVideoById(request);
+                      else player.cueVideoById(request);
+                    }
+                    log(`restored (${queue.length}/20): ` + queue.map(item =>
+                      `${item.id === current?.id ? '[current] ' : ''}${item.title} [${item.id}] (${Math.round(item.duration)} seconds)`).join(' | '));
+                    return { success: true, error: null };
+                  } catch (error) {
+                    return { success: false, error: `${error?.name || 'Error'}: ${error?.message || String(error)}` };
+                  }
+                }
+
                 window.youtubePlayerControls = {
                   isReady: () => ready,
                   play: () => {
@@ -303,6 +363,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   },
                   getError: () => lastError,
                   skip: skipCurrent,
+                  restoreQueue,
                   refresh: items => { void refreshQueue(items); },
                   getQueue: () => ({ currentId: current?.id || null, videos: queue }),
                   getQueueState: () => {
@@ -336,10 +397,15 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   } else if (event.code === 'KeyH' || event.key === '?') {
                     event.preventDefault();
                     showKeyboardHelp();
+                  } else if (event.code === 'KeyR') {
+                    event.preventDefault();
+                    void window.requestYoutubeQueueRestore?.();
                   }
                 });
                 window.addEventListener('message', event => {
                   if (event.data === 'pluto-ad-detector:show-youtube-help') showKeyboardHelp();
+                  else if (event.data === 'pluto-ad-detector:reload-youtube-queue')
+                    void window.requestYoutubeQueueRestore?.();
                 });
 
                 window.onYouTubeIframeAPIReady = () => {
@@ -362,7 +428,8 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                           log(`single-video override ${singleVideoId}; RSS and duration filtering disabled`);
                           return;
                         }
-                        void refreshQueue(candidates);
+                        if (restoredQueueState) restoreQueue(restoredQueueState);
+                        else void refreshQueue(candidates);
                       },
                       onStateChange: event => {
                         if (event.data === YT.PlayerState.ENDED && current && !singleVideoId) {
@@ -388,9 +455,9 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                       onReady: () => {
                         probeReady = true;
                         probe.mute();
-                        const items = pendingRefresh || candidates;
+                        const items = pendingRefresh || (restoredQueueState ? [] : candidates);
                         pendingRefresh = null;
-                        void refreshQueue(items);
+                        if (items.length) void refreshQueue(items);
                       },
                       onError: event => { probeError = `YouTube IFrame API error ${event.data}: ${errorNames[event.data] || 'Unknown error'}`; }
                     }

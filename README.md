@@ -67,14 +67,21 @@ removed from the queue, and the next video follows the current play/pause intent
 The same operation is available as `window.youtubePlayerControls.skip()`.
 Press `H` or `?` on the local YouTube page to briefly show its keyboard shortcuts;
 the help overlay stays hidden during normal playback.
+Press `R` on that page to reload `youtube-queue.json`. Runtime reload is accepted
+only while ad tracking is paused or the YouTube tab is foregrounded, and it keeps
+the restored player playing or paused according to its current player state.
 Press `P` in either browser tab to pause or resume ad tracking. Pausing stops ad
 switching, pauses YouTube, brings the source page forward, and unmutes it. Resuming clears
 the detector's pending state and confirms the current state from fresh samples;
 neither operation changes the video queue.
 On normal shutdown or Ctrl+C, automatic channel mode saves a versioned snapshot
 to `youtube-queue.json`, including the current position, ordered queue, durations,
-and completed/skipped IDs. This is best-effort shutdown state only; it is not yet
-restored on startup. Single-video `--youtube-url` mode does not create the file.
+and completed/skipped IDs. Start with `--resume` to restore a compatible snapshot.
+Snapshots use their saved channel URL and minimum duration only for compatibility
+checks, never to override CLI settings, and snapshots older than seven days are
+treated as stale. Missing, invalid, stale, mismatched, or unsupported snapshots
+are logged and ignored without stopping the application. Single-video
+`--youtube-url` mode neither restores nor creates the file.
 Automatic channel mode also uses channel-page renderer metadata to reject current
 live streams, scheduled/upcoming streams, unfinished premieres, and stream
 recordings before probing duration. Each rejection logs its title, ID, and reason.

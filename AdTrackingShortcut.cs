@@ -12,6 +12,9 @@ internal static class AdTrackingShortcut
             } else if ((event.code === 'KeyH' || event.key === '?') && globalThis.top !== globalThis) {
               event.preventDefault();
               globalThis.top.postMessage('pluto-ad-detector:show-youtube-help', '*');
+            } else if (event.code === 'KeyR' && globalThis.top !== globalThis) {
+              event.preventDefault();
+              globalThis.top.postMessage('pluto-ad-detector:reload-youtube-queue', '*');
             }
           }, true);
         })();

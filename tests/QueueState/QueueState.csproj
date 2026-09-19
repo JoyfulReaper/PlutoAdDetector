@@ -8,5 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../YoutubeQueueState.cs" Link="YoutubeQueueState.cs" />
+    <Compile Include="../../YoutubeQueueRestoreAccess.cs" Link="YoutubeQueueRestoreAccess.cs" />
   </ItemGroup>
 </Project>
