@@ -119,11 +119,30 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                 }
                 #player { display: block; border: 0; }
                 #probe { position: absolute; left: -1000px; top: 0; width: 200px; height: 200px; border: 0; }
+                #keyboard-help {
+                  position: fixed;
+                  top: 12px;
+                  right: 12px;
+                  z-index: 10;
+                  padding: 8px 10px;
+                  border-radius: 6px;
+                  background: rgba(0, 0, 0, 0.78);
+                  color: #fff;
+                  font: 13px/1.5 system-ui, sans-serif;
+                  opacity: 0;
+                  pointer-events: none;
+                  transition: opacity 120ms ease;
+                }
+                #keyboard-help.visible { opacity: 1; }
               </style>
             </head>
             <body>
               <div id="player"></div>
               <div id="probe"></div>
+              <div id="keyboard-help" role="status" aria-live="polite" aria-hidden="true">
+                <div>N = next video</div>
+                <div>P = pause/resume ad tracking</div>
+              </div>
               <script>
                 const candidates = {{candidatesJson}};
                 const minimumDuration = {{minimumDurationSeconds}};
@@ -141,8 +160,22 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                 let pendingRefresh = null;
                 let wantsPlayback = false;
                 let probeError = null;
+                let keyboardHelpTimer = null;
                 const log = message => console.log(`youtube queue: ${message}`);
                 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+                function showKeyboardHelp() {
+                  const overlay = document.getElementById('keyboard-help');
+                  if (!overlay) return;
+                  overlay.classList.add('visible');
+                  overlay.setAttribute('aria-hidden', 'false');
+                  if (keyboardHelpTimer !== null) clearTimeout(keyboardHelpTimer);
+                  keyboardHelpTimer = setTimeout(() => {
+                    overlay.classList.remove('visible');
+                    overlay.setAttribute('aria-hidden', 'true');
+                    keyboardHelpTimer = null;
+                  }, 2500);
+                }
 
                 function selectCurrent() {
                   current = queue[0] || null;
@@ -296,9 +329,17 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                 };
 
                 window.addEventListener('keydown', event => {
-                  if (event.code !== 'KeyN' || event.repeat || event.ctrlKey || event.altKey || event.metaKey) return;
-                  event.preventDefault();
-                  skipCurrent();
+                  if (event.repeat || event.ctrlKey || event.altKey || event.metaKey) return;
+                  if (event.code === 'KeyN') {
+                    event.preventDefault();
+                    skipCurrent();
+                  } else if (event.code === 'KeyH' || event.key === '?') {
+                    event.preventDefault();
+                    showKeyboardHelp();
+                  }
+                });
+                window.addEventListener('message', event => {
+                  if (event.data === 'pluto-ad-detector:show-youtube-help') showKeyboardHelp();
                 });
 
                 window.onYouTubeIframeAPIReady = () => {

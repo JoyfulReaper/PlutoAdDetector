@@ -10,8 +10,15 @@ const script = fs.readFileSync('LocalYoutubePlayerHost.cs', 'utf8').match(/<scri
 const players = {};
 const logs = [];
 const keyListeners = [];
-const context = { window: { location: { origin: 'http://127.0.0.1:1234' }, addEventListener: (type, listener) => { if (type === 'keydown') keyListeners.push(listener); } },
-  console: { log: value => logs.push(value) }, setTimeout: callback => setImmediate(callback),
+const messageListeners = [];
+const helpChanges = [];
+const helpOverlay = {
+  classList: { add: value => helpChanges.push(`add:${value}`), remove: value => helpChanges.push(`remove:${value}`) },
+  setAttribute: (name, value) => helpChanges.push(`${name}:${value}`)
+};
+const context = { window: { location: { origin: 'http://127.0.0.1:1234' }, addEventListener: (type, listener) => { if (type === 'keydown') keyListeners.push(listener); if (type === 'message') messageListeners.push(listener); } },
+  document: { getElementById: id => id === 'keyboard-help' ? helpOverlay : null },
+  console: { log: value => logs.push(value) }, setTimeout: callback => setImmediate(callback), clearTimeout: () => {},
   YT: { PlayerState: { ENDED: 0, PLAYING: 1 }, Player: class {
     constructor(id, options) { players[id] = this; this.events = options.events; this.id = ''; this.playing = false; this.loads = 0; this.loadedIds = []; }
     mute() {} unMute() {}
@@ -70,6 +77,19 @@ async function test() {
   assert.equal(controls.getQueue().currentId, 'new1');
   assert.equal(players.player.playing, false);
   assert(controls.getQueue().videos.every(x => x.id !== 'new0'));
+  let helpPrevented = false;
+  keyListeners[0]({ code: 'KeyH', key: 'h', repeat: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault: () => { helpPrevented = true; } });
+  await new Promise(setImmediate);
+  assert.equal(helpPrevented, true);
+  assert.deepEqual(helpChanges, ['add:visible', 'aria-hidden:false', 'remove:visible', 'aria-hidden:true']);
+  keyListeners[0]({ code: 'Slash', key: '?', repeat: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {} });
+  await new Promise(setImmediate);
+  assert.equal(helpChanges.filter(x => x === 'add:visible').length, 2);
+  messageListeners[0]({ data: 'pluto-ad-detector:show-youtube-help' });
+  await new Promise(setImmediate);
+  assert.equal(helpChanges.filter(x => x === 'add:visible').length, 3);
   players.player.position = 17.5;
   const saved = controls.getQueueState();
   assert.deepEqual(JSON.parse(JSON.stringify(saved.currentVideo)), {
@@ -78,7 +98,7 @@ async function test() {
   assert.equal(saved.queuedVideos[0].id, 'new1');
   assert.equal(saved.queuedVideos[0].durationSeconds, 600);
   assert.deepEqual([...saved.completedOrSkippedVideoIds], ['boundary', 'new0']);
-  console.log('PASS: duration filtering, auto/manual skip logs, deduplication, ordering, cap, current preservation, N shortcut, advancement and pause intent');
+  console.log('PASS: queue behavior, N shortcut, H/? help overlay, advancement and pause intent');
   delete players.probe;
   const singleKeys = [];
   const singleContext = { ...context, window: { location: context.window.location,

@@ -17,6 +17,7 @@ const context = {
   requestAdTrackingToggle() { toggles++; }
 };
 context.globalThis = context;
+context.top = context;
 vm.runInNewContext(script, context);
 assert(listener, 'The P shortcut listener was not installed.');
 
@@ -34,6 +35,26 @@ assert.equal(press({ repeat: true }), false);
 assert.equal(press({ ctrlKey: true }), false);
 assert.equal(toggles, 1);
 
+let iframeListener;
+const messages = [];
+const iframeContext = {
+  addEventListener(type, callback) { if (type === 'keydown') iframeListener = callback; },
+  requestAdTrackingToggle() {},
+  top: { postMessage: (message, target) => messages.push({ message, target }) }
+};
+iframeContext.globalThis = iframeContext;
+vm.runInNewContext(script, iframeContext);
+let iframePrevented = false;
+iframeListener({ code: 'KeyH', key: 'h', repeat: false, ctrlKey: false, altKey: false, metaKey: false,
+  preventDefault() { iframePrevented = true; } });
+iframeListener({ code: 'Slash', key: '?', repeat: false, ctrlKey: false, altKey: false, metaKey: false,
+  preventDefault() {} });
+assert.equal(iframePrevented, true);
+assert.deepEqual(messages, [
+  { message: 'pluto-ad-detector:show-youtube-help', target: '*' },
+  { message: 'pluto-ad-detector:show-youtube-help', target: '*' }
+]);
+
 vm.runInNewContext(script, context);
 assert.equal(context.__plutoAdTrackingShortcutInstalled, true);
-console.log('PASS: browser-wide P shortcut requests one tracking toggle and ignores repeats/modifiers');
+console.log('PASS: browser-wide P toggle and iframe H/? help forwarding');

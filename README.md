@@ -65,6 +65,8 @@ Press `N` while the local YouTube player page has keyboard focus to skip the
 current automatic-queue video. The video is considered completed for the run,
 removed from the queue, and the next video follows the current play/pause intent.
 The same operation is available as `window.youtubePlayerControls.skip()`.
+Press `H` or `?` on the local YouTube page to briefly show its keyboard shortcuts;
+the help overlay stays hidden during normal playback.
 Press `P` in either browser tab to pause or resume ad tracking. Pausing stops ad
 switching, pauses YouTube, brings the source page forward, and unmutes it. Resuming clears
 the detector's pending state and confirms the current state from fresh samples;
