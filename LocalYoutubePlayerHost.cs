@@ -427,6 +427,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   skip: skipCurrent,
                   restoreQueue,
                   refresh: items => { void refreshQueue(items); },
+                  isRefreshActive: () => refreshing || pendingRefresh !== null,
                   getQueue: () => ({ currentId: current?.id || null, videos: queue }),
                   getQueueState: () => {
                     let playbackPositionSeconds = null;

@@ -46,9 +46,11 @@ async function waitLogCount(fragment, count) {
   assert.equal(logs.filter(x => x.includes(fragment)).length, count);
 }
 async function test() {
+  assert.equal(controls.isRefreshActive(), true);
   assert.equal(controls.getQueue().currentId, null);
   assert.equal(controls.play().success, true);
   await waitRefresh(1);
+  assert.equal(controls.isRefreshActive(), false);
   assert.equal(controls.getQueue().videos.length, 2);
   assert.equal(players.player.id, 'boundary');
   assert.equal(players.player.playing, true); // Empty-queue playback intent carried into selection.
@@ -138,6 +140,7 @@ async function test() {
   const staleLoadsBefore = players.probe.loadedIds.filter(id => id === staleCandidate.id).length;
   controls.refresh([staleCandidate]);
   controls.refresh([stalePendingCandidate]);
+  assert.equal(controls.isRefreshActive(), true);
   const raceRestoreState = {
     currentVideo: { id: 'racecur0001', title: 'Race restored current', playbackPositionSeconds: 12 },
     queuedVideos: [
@@ -153,10 +156,13 @@ async function test() {
   assert.deepEqual(JSON.parse(JSON.stringify(controls.getQueueState().completedOrSkippedVideoIds)), ['racedon0001']);
   assert.equal(players.probe.loadedIds.filter(id => id === staleCandidate.id).length, staleLoadsBefore + 1);
   assert.equal(players.probe.loadedIds.includes(stalePendingCandidate.id), false);
+  assert.equal(controls.isRefreshActive(), false);
 
   // The stale probe must not leak its duration into the restored generation.
   controls.refresh([staleCandidate]);
+  assert.equal(controls.isRefreshActive(), true);
   await waitRefresh(4);
+  assert.equal(controls.isRefreshActive(), false);
   assert.equal(players.probe.loadedIds.filter(id => id === staleCandidate.id).length, staleLoadsBefore + 2);
   assert.deepEqual(JSON.parse(JSON.stringify(controls.getQueue().videos.map(video => video.id))),
     ['racecur0001', 'stalevid001', 'racenxt0001']);

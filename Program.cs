@@ -215,11 +215,12 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 nextQueueDepthCheckAt = refreshCheckTime.AddSeconds(5);
                 try
                 {
-                    var remainingVideos = await GetYoutubeQueueRemainingCountAsync(youtubePage);
-                    if (queueRefreshPolicy.ShouldRefresh(remainingVideos, refreshCheckTime))
+                    var queueStatus = await GetYoutubeQueueRefreshStatusAsync(youtubePage);
+                    if (!queueStatus.RefreshActive &&
+                        queueRefreshPolicy.ShouldRefresh(queueStatus.RemainingVideos, refreshCheckTime))
                     {
                         Console.Error.WriteLine(
-                            $"youtube discovery refresh triggered: automatic queue has {remainingVideos} remaining videos (threshold: {YoutubeQueueRefreshPolicy.RemainingVideoThreshold})");
+                            $"youtube discovery refresh triggered: automatic queue has {queueStatus.RemainingVideos} remaining videos (threshold: {YoutubeQueueRefreshPolicy.RemainingVideoThreshold})");
                         // Fetch asynchronously so slow RSS requests never block ad detection.
                         feedRefresh = YoutubeFeed.FetchAsync(options.ChannelUrl, feedRefreshCancellation.Token);
                     }
@@ -393,16 +394,22 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     }
 }
 
-static async Task<int> GetYoutubeQueueRemainingCountAsync(IPage page)
+static async Task<YoutubeQueueRefreshStatus> GetYoutubeQueueRefreshStatusAsync(IPage page)
 {
-    return await page.EvaluateAsync<int>(
+    var json = await page.EvaluateAsync<string>(
         """
         () => {
-          const queuedVideos = window.youtubePlayerControls?.getQueueState?.().queuedVideos;
+          const controls = window.youtubePlayerControls;
+          const queuedVideos = controls?.getQueueState?.().queuedVideos;
           if (!Array.isArray(queuedVideos)) throw new Error('Local YouTube queue state is unavailable.');
-          return queuedVideos.length;
+          return JSON.stringify({
+            remainingVideos: queuedVideos.length,
+            refreshActive: controls.isRefreshActive?.() === true
+          });
         }
         """);
+    return JsonSerializer.Deserialize<YoutubeQueueRefreshStatus>(json, JsonOptions.Instance)
+        ?? throw new InvalidOperationException("Local YouTube queue returned no refresh status.");
 }
 
 static async Task<YoutubeControlResult> ApplyYoutubeQueueRestoreAsync(
@@ -544,6 +551,8 @@ internal sealed record DetectionSample(
     float Height);
 
 internal sealed record YoutubeControlResult(bool Success, string? Error);
+
+internal sealed record YoutubeQueueRefreshStatus(int RemainingVideos, bool RefreshActive);
 
 internal static class JsonOptions
 {
