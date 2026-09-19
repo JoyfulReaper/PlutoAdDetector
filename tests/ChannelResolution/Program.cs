@@ -36,6 +36,7 @@ const string titleLiveId = "IIIIIIIIIII";
 const string lockupUpcomingId = "JJJJJJJJJJJ";
 const string lockupLiveId = "KKKKKKKKKKK";
 const string premiereBadgeId = "LLLLLLLLLLL";
+const string duplicateMetadataId = "MMMMMMMMMMM";
 var videosHtml = $$"""
     <script>
       var ytInitialData = {
@@ -67,7 +68,13 @@ var videosHtml = $$"""
             } }] } }, "metadata": { "lockupMetadataViewModel": { "title": { "content": "Lockup Live" } } } } },
           { "videoRenderer": { "videoId": "{{premiereBadgeId}}", "title": { "simpleText": "Premiere Badge" },
             "badges": [{ "metadataBadgeRenderer": { "label": "PREMIERE" } }] } },
-          { "videoRenderer": { "videoId": "{{firstId}}", "title": { "simpleText": "Duplicate" } } }
+          { "videoRenderer": { "videoId": "{{duplicateMetadataId}}", "title": { "simpleText": "Brief" } } },
+          { "lockupViewModel": { "contentId": "{{duplicateMetadataId}}", "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+            "contentImage": { "thumbnailViewModel": { "overlays": [{ "thumbnailBottomOverlayViewModel": {
+              "badges": [{ "thumbnailBadgeViewModel": { "text": "LIVE", "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE" } }]
+            } }] } }, "metadata": { "lockupMetadataViewModel": { "title": { "content": "Richer Duplicate Title" } } } } },
+          { "videoRenderer": { "videoId": "{{firstId}}", "title": { "simpleText": "Duplicate" } } },
+          { "videoRenderer": { "videoId": "{{liveId}}", "title": { "simpleText": "Longer normal duplicate title" } } }
         ]
       };
     </script>
@@ -79,7 +86,7 @@ Equal(secondId, pageVideos[1].Id);
 Equal("Second Video", pageVideos[1].Title);
 Equal(lockupId, pageVideos[2].Id);
 Equal("Current Lockup Video", pageVideos[2].Title);
-if (pageVideos.Length != 11) throw new Exception("Shorts and duplicate IDs should be excluded.");
+if (pageVideos.Length != 12) throw new Exception("Shorts should be excluded and duplicate IDs should be merged.");
 if (pageVideos.Single(video => video.Id == liveId).AutomaticSkipReason != "currently live stream") throw new Exception("LIVE renderer not classified.");
 if (pageVideos.Single(video => video.Id == upcomingId).AutomaticSkipReason != "upcoming/scheduled live stream") throw new Exception("Upcoming renderer not classified.");
 if (pageVideos.Single(video => video.Id == streamedId).AutomaticSkipReason != "live stream recording") throw new Exception("Stream recording not classified.");
@@ -88,6 +95,10 @@ if (pageVideos.Single(video => video.Id == titleLiveId).AutomaticSkipReason is n
 if (pageVideos.Single(video => video.Id == lockupUpcomingId).AutomaticSkipReason != "upcoming/scheduled premiere") throw new Exception("Upcoming lockup premiere not classified.");
 if (pageVideos.Single(video => video.Id == lockupLiveId).AutomaticSkipReason != "currently live stream") throw new Exception("Live lockup not classified.");
 if (pageVideos.Single(video => video.Id == premiereBadgeId).AutomaticSkipReason != "premiere not yet completed") throw new Exception("Premiere badge not classified.");
+var mergedDuplicate = pageVideos.Single(video => video.Id == duplicateMetadataId);
+Equal("Richer Duplicate Title", mergedDuplicate.Title);
+Equal("currently live stream", mergedDuplicate.AutomaticSkipReason);
+Equal(duplicateMetadataId, pageVideos[^1].Id);
 
 var rssXml = $$"""
     <feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015">

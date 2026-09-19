@@ -139,8 +139,8 @@ internal static class YoutubeFeed
             ?? throw new InvalidDataException("ytInitialData JSON was not found on the channel videos page.");
         using var document = JsonDocument.Parse(json);
         var uploads = new List<YoutubeUpload>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        Visit(document.RootElement, uploads, seen);
+        var uploadIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
+        Visit(document.RootElement, uploads, uploadIndexes);
         return uploads.ToArray();
     }
 
@@ -283,11 +283,11 @@ internal static class YoutubeFeed
     private static void Visit(
         JsonElement element,
         List<YoutubeUpload> uploads,
-        HashSet<string> seen)
+        Dictionary<string, int> uploadIndexes)
     {
         if (element.ValueKind == JsonValueKind.Array)
         {
-            foreach (var child in element.EnumerateArray()) Visit(child, uploads, seen);
+            foreach (var child in element.EnumerateArray()) Visit(child, uploads, uploadIndexes);
             return;
         }
         if (element.ValueKind != JsonValueKind.Object) return;
@@ -296,15 +296,15 @@ internal static class YoutubeFeed
         {
             if (property.Name is "videoRenderer" or "gridVideoRenderer")
             {
-                AddRenderer(property.Value, uploads, seen);
+                AddRenderer(property.Value, uploads, uploadIndexes);
             }
             else if (property.Name == "lockupViewModel")
             {
-                AddLockup(property.Value, uploads, seen);
+                AddLockup(property.Value, uploads, uploadIndexes);
             }
             else
             {
-                Visit(property.Value, uploads, seen);
+                Visit(property.Value, uploads, uploadIndexes);
             }
         }
     }
@@ -312,11 +312,11 @@ internal static class YoutubeFeed
     private static void AddRenderer(
         JsonElement renderer,
         List<YoutubeUpload> uploads,
-        HashSet<string> seen)
+        Dictionary<string, int> uploadIndexes)
     {
         if (!renderer.TryGetProperty("videoId", out var idElement)) return;
         var id = idElement.GetString() ?? "";
-        if (!IsVideoId(id) || !seen.Add(id)) return;
+        if (!IsVideoId(id)) return;
 
         var title = "Untitled";
         if (renderer.TryGetProperty("title", out var titleElement))
@@ -328,7 +328,7 @@ internal static class YoutubeFeed
                     .Select(run => run.TryGetProperty("text", out var text) ? text.GetString() : null));
         }
         title = Regex.Replace(title, @"\s+", " ").Trim();
-        uploads.Add(new YoutubeUpload(
+        AddOrMerge(uploads, uploadIndexes, new YoutubeUpload(
             id,
             title.Length == 0 ? "Untitled" : title,
             AutomaticSkipReason(renderer)));
@@ -337,13 +337,13 @@ internal static class YoutubeFeed
     private static void AddLockup(
         JsonElement lockup,
         List<YoutubeUpload> uploads,
-        HashSet<string> seen)
+        Dictionary<string, int> uploadIndexes)
     {
         if (!lockup.TryGetProperty("contentType", out var type) ||
             type.GetString() != "LOCKUP_CONTENT_TYPE_VIDEO" ||
             !lockup.TryGetProperty("contentId", out var idElement)) return;
         var id = idElement.GetString() ?? "";
-        if (!IsVideoId(id) || !seen.Add(id)) return;
+        if (!IsVideoId(id)) return;
 
         var title = "Untitled";
         if (lockup.TryGetProperty("metadata", out var metadata) &&
@@ -354,10 +354,33 @@ internal static class YoutubeFeed
             title = content.GetString() ?? title;
         }
         title = Regex.Replace(title, @"\s+", " ").Trim();
-        uploads.Add(new YoutubeUpload(
+        AddOrMerge(uploads, uploadIndexes, new YoutubeUpload(
             id,
             title.Length == 0 ? "Untitled" : title,
             AutomaticSkipReason(lockup)));
+    }
+
+    private static void AddOrMerge(
+        List<YoutubeUpload> uploads,
+        Dictionary<string, int> uploadIndexes,
+        YoutubeUpload candidate)
+    {
+        if (!uploadIndexes.TryGetValue(candidate.Id, out var index))
+        {
+            uploadIndexes.Add(candidate.Id, uploads.Count);
+            uploads.Add(candidate);
+            return;
+        }
+
+        var existing = uploads[index];
+        var title = existing.Title;
+        if (title == "Untitled" || candidate.Title != "Untitled" && candidate.Title.Length > title.Length)
+            title = candidate.Title;
+        uploads[index] = existing with
+        {
+            Title = title,
+            AutomaticSkipReason = existing.AutomaticSkipReason ?? candidate.AutomaticSkipReason
+        };
     }
 
     private static string? AutomaticSkipReason(JsonElement renderer)
