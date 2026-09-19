@@ -514,13 +514,14 @@ static async Task<DetectionSample> DetectAsync(IPage page, PlutoScanMode scanMod
     var mode = scanMode == PlutoScanMode.Full ? "full" : "focused";
     var json = await page.EvaluateAsync<string>(PlutoDetectionScript.Script, mode);
     return JsonSerializer.Deserialize<DetectionSample>(json, JsonOptions.Instance)
-        ?? new DetectionSample(false, "DOM", false, 0, 0, 0, 0);
+        ?? new DetectionSample(false, "DOM", false, DetectionBounds.Empty, DetectionBounds.Empty);
 }
 
 static async Task SaveDiagnosticCropAsync(IPage page, DetectionSample sample, string captureDirectory)
 {
     try
     {
+        var region = sample.DomDetectionRegion;
         var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
         var path = Path.Combine(captureDirectory, $"player-upper-left-{timestamp}.png");
         await page.ScreenshotAsync(new PageScreenshotOptions
@@ -528,10 +529,10 @@ static async Task SaveDiagnosticCropAsync(IPage page, DetectionSample sample, st
             Path = path,
             Clip = new Clip
             {
-                X = sample.X,
-                Y = sample.Y,
-                Width = sample.Width,
-                Height = sample.Height
+                X = region.X,
+                Y = region.Y,
+                Width = region.Width,
+                Height = region.Height
             }
         });
     }
@@ -545,10 +546,13 @@ internal sealed record DetectionSample(
     bool IsAd,
     string Method,
     bool HasPlayer,
-    float X,
-    float Y,
-    float Width,
-    float Height);
+    DetectionBounds DomDetectionRegion,
+    DetectionBounds PlayerBounds);
+
+internal sealed record DetectionBounds(float X, float Y, float Width, float Height)
+{
+    internal static readonly DetectionBounds Empty = new(0, 0, 0, 0);
+}
 
 internal sealed record YoutubeControlResult(bool Success, string? Error);
 

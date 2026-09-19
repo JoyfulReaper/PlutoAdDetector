@@ -67,16 +67,17 @@ const focused = JSON.parse(detector('focused'));
 assert.equal(focused.isAd, true);
 assert.equal(focused.hasPlayer, true);
 assert.equal(focused.method, 'DOM');
-assert.equal(focused.width, 450);
-assert.equal(focused.height, 180);
+assert.deepEqual(focused.domDetectionRegion, { x: 0, y: 0, width: 450, height: 180 });
+assert.deepEqual(focused.playerBounds, { x: 0, y: 0, width: 1000, height: 600 });
 assert(!calls.includes('*'), 'Focused mode must not request every DOM element.');
 
 calls.length = 0;
 const full = JSON.parse(detector('full'));
 assert.equal(full.isAd, true);
 assert(calls.includes('*'), 'Full mode must preserve the whole-document scan.');
-assert.equal(full.width, 450, 'Full mode must retain player-region diagnostic crop coordinates.');
-assert.equal(full.height, 180, 'Full mode must retain player-region diagnostic crop coordinates.');
+assert.deepEqual(full.domDetectionRegion, { x: 0, y: 0, width: 450, height: 180 },
+  'Full mode must retain player-region diagnostic crop coordinates.');
+assert.deepEqual(full.playerBounds, { x: 0, y: 0, width: 1000, height: 600 });
 
 semanticCandidates = [outsideFocusedRegionAd];
 allCandidates = [container, largeVideo, smallVideo, outsideFocusedRegionAd, ...unrelated];
@@ -108,7 +109,15 @@ videos.length = 0;
 const noPlayer = JSON.parse(detector('focused'));
 assert.equal(noPlayer.isAd, false);
 assert.equal(noPlayer.hasPlayer, false);
-console.log('PASS: scan bounds, enormous-wrapper filtering, and effective visibility checks');
+assert.deepEqual(noPlayer.domDetectionRegion, { x: 0, y: 0, width: 0, height: 0 });
+assert.deepEqual(noPlayer.playerBounds, { x: 0, y: 0, width: 0, height: 0 });
+
+const clippedVideo = element(rect(-100, -50, 1400, 900), { parentElement: container, closest: () => container });
+videos.push(clippedVideo);
+const clipped = JSON.parse(detector('focused'));
+assert.deepEqual(clipped.playerBounds, { x: 0, y: 0, width: 1200, height: 800 },
+  'Full player bounds must describe only the viewport-visible video rectangle.');
+console.log('PASS: DOM detection region, full player bounds, scan modes, and effective visibility checks');
 
 function element(box, options = {}) {
   const attributes = options.attributes || {};
