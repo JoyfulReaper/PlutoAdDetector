@@ -43,7 +43,10 @@ If RSS returns an error or malformed content, discovery falls back to the channe
 `ytInitialData`. Shorts-style renderers are ignored and channel-page order is
 preserved. Logs identify the discovery source. If both methods fail during a
 refresh, the existing queue remains intact.
-The feed refreshes every five minutes without blocking Pluto detection. A separate
+Discovery runs once at startup. After that, the player queue is checked through
+the local control bridge and discovery refreshes only when five or fewer videos
+remain. Each attempt, including a failure, starts a five-minute cooldown before
+another attempt; the trigger reason is logged. A separate
 muted IFrame player checks durations without interrupting the current video.
 The queue holds at most 20 valid videos, retaining the current video and ordering
 waiting videos newest first. Duplicate IDs and videos completed during this run

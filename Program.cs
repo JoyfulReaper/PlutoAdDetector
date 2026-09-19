@@ -47,10 +47,11 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     Directory.CreateDirectory(options.CaptureDirectory);
     var browserProfileDirectory = Path.GetFullPath("browser-profile");
     Directory.CreateDirectory(browserProfileDirectory);
+    var automaticQueueMode = YoutubeQueueRefreshPolicy.IsAutomaticMode(options.YoutubeVideoId);
     YoutubeUpload[] candidates;
     try
     {
-        candidates = options.YoutubeVideoId is null
+        candidates = automaticQueueMode
             ? (await YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken)).Uploads
             : [];
     }
@@ -59,6 +60,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
         Console.Error.WriteLine($"youtube discovery failed: {exception.Message}");
         candidates = [];
     }
+    var initialDiscoveryCompletedAt = DateTimeOffset.UtcNow;
     await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(candidates, options.MinimumDurationSeconds, options.YoutubeVideoId);
 
     using var playwright = await Playwright.CreateAsync();
@@ -128,15 +130,13 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var youtubePlaybackStarted = false;
     string? loggedYoutubeError = null;
     var nextYoutubeHealthCheckAt = DateTimeOffset.MinValue;
-    var nextFeedRefreshAt = DateTimeOffset.UtcNow.AddMinutes(5);
+    var queueRefreshPolicy = new YoutubeQueueRefreshPolicy(initialDiscoveryCompletedAt);
+    var nextQueueDepthCheckAt = DateTimeOffset.UtcNow;
     Task<YoutubeDiscovery>? feedRefresh = null;
     var trackingPaused = false;
 
     while (!cancellationToken.IsCancellationRequested)
     {
-        // Fetch asynchronously so slow RSS requests never block ad detection.
-        if (options.YoutubeVideoId is null && feedRefresh is null && DateTimeOffset.UtcNow >= nextFeedRefreshAt)
-            feedRefresh = YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken);
         if (feedRefresh?.IsCompleted is true)
         {
             try
@@ -150,13 +150,39 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                         automaticSkipReason = item.AutomaticSkipReason
                     }).ToArray());
             }
-            catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
-                exception is HttpRequestException or System.Xml.XmlException or TaskCanceledException)
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {
                 Console.Error.WriteLine($"youtube discovery refresh failed (queue retained): {exception.Message}");
             }
-            feedRefresh = null;
-            nextFeedRefreshAt = DateTimeOffset.UtcNow.AddMinutes(5);
+            finally
+            {
+                feedRefresh = null;
+                queueRefreshPolicy.RecordAttemptCompleted(DateTimeOffset.UtcNow);
+            }
+        }
+
+        var refreshCheckTime = DateTimeOffset.UtcNow;
+        if (automaticQueueMode &&
+            feedRefresh is null &&
+            refreshCheckTime >= nextQueueDepthCheckAt &&
+            queueRefreshPolicy.CooldownElapsed(refreshCheckTime))
+        {
+            nextQueueDepthCheckAt = refreshCheckTime.AddSeconds(5);
+            try
+            {
+                var remainingVideos = await GetYoutubeQueueRemainingCountAsync(youtubePage);
+                if (queueRefreshPolicy.ShouldRefresh(remainingVideos, refreshCheckTime))
+                {
+                    Console.Error.WriteLine(
+                        $"youtube discovery refresh triggered: automatic queue has {remainingVideos} remaining videos (threshold: {YoutubeQueueRefreshPolicy.RemainingVideoThreshold})");
+                    // Fetch asynchronously so slow RSS requests never block ad detection.
+                    feedRefresh = YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken);
+                }
+            }
+            catch (PlaywrightException exception)
+            {
+                Console.Error.WriteLine($"youtube queue depth check failed: {exception.Message}");
+            }
         }
 
         var toggleCount = Interlocked.Exchange(ref trackingToggleRequests, 0);
@@ -256,6 +282,18 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 
         await Task.Delay(options.PollInterval, cancellationToken);
     }
+}
+
+static async Task<int> GetYoutubeQueueRemainingCountAsync(IPage page)
+{
+    return await page.EvaluateAsync<int>(
+        """
+        () => {
+          const queuedVideos = window.youtubePlayerControls?.getQueueState?.().queuedVideos;
+          if (!Array.isArray(queuedVideos)) throw new Error('Local YouTube queue state is unavailable.');
+          return queuedVideos.length;
+        }
+        """);
 }
 
 static string? FindInstalledGoogleChrome()
