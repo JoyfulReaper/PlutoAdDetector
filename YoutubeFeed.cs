@@ -83,7 +83,7 @@ internal static class YoutubeFeed
             var html = await GetRequiredTextAsync(client, videosUrl, cancellationToken);
             var uploads = VideosFromHtml(html);
             if (uploads.Length == 0)
-                throw new InvalidDataException("Channel videos page contained no videoRenderer entries.");
+                throw new InvalidDataException("Channel videos page contained no usable video entries.");
             Console.Error.WriteLine($"youtube discovery: channel-page fallback ({uploads.Length} uploads)");
             return new YoutubeDiscovery(uploads, "channel-page fallback");
         }
