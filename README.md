@@ -24,11 +24,14 @@ dotnet run
 
 Chromium is headed by default and uses the real browser-window dimensions rather
 than an emulated viewport. When Google Chrome is installed, Playwright launches
-that executable; otherwise it falls back to Playwright's bundled Chromium. A
-second tab preloads a configurable test YouTube video. When an ad starts, Pluto
-is muted and YouTube is brought forward and resumed. When the ad ends, YouTube
-is paused and Pluto is brought forward and unmuted. YouTube media and visible
-player errors are logged after playback starts.
+that executable; otherwise it falls back to Playwright's bundled Chromium. It
+uses a dedicated persistent profile under `browser-profile/`, so cookies and
+browser state survive between runs without using or modifying the normal Chrome
+profile. The headed browser remains available for normal interaction. A second
+tab preloads a configurable test YouTube video. When an ad starts, Pluto is muted
+and YouTube is brought forward and resumed. When the ad ends, YouTube is paused
+and Pluto is brought forward and unmuted. YouTube media and visible player errors
+are logged after playback starts.
 
 Use `dotnet run -- --headless` to hide Chromium. Run `dotnet run -- --help` for
 polling, confirmation, URL, YouTube URL, and capture options.

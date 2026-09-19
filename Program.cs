@@ -45,27 +45,29 @@ catch (PlaywrightException exception)
 static async Task RunAsync(DetectorOptions options, CancellationToken cancellationToken)
 {
     Directory.CreateDirectory(options.CaptureDirectory);
+    var browserProfileDirectory = Path.GetFullPath("browser-profile");
+    Directory.CreateDirectory(browserProfileDirectory);
 
     using var playwright = await Playwright.CreateAsync();
     var chromeExecutable = FindInstalledGoogleChrome();
-    await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+    await using var context = await playwright.Chromium.LaunchPersistentContextAsync(
+        browserProfileDirectory,
+        new BrowserTypeLaunchPersistentContextOptions
     {
         Headless = options.Headless,
         ExecutablePath = chromeExecutable,
-        Args = ["--autoplay-policy=no-user-gesture-required"]
-    });
-    Console.Error.WriteLine(chromeExecutable is null
-        ? "browser: Playwright Chromium"
-        : $"browser: Google Chrome ({chromeExecutable})");
-
-    var context = await browser.NewContextAsync(new BrowserNewContextOptions
-    {
+        Args = ["--autoplay-policy=no-user-gesture-required"],
         ViewportSize = options.Headless
             ? new ViewportSize { Width = 1440, Height = 900 }
             : ViewportSize.NoViewport,
         Locale = "en-US"
     });
-    var plutoPage = await context.NewPageAsync();
+    Console.Error.WriteLine(chromeExecutable is null
+        ? "browser: Playwright Chromium"
+        : $"browser: Google Chrome ({chromeExecutable})");
+    Console.Error.WriteLine($"browser profile: {browserProfileDirectory}");
+
+    var plutoPage = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
     await plutoPage.GotoAsync(options.Url, new PageGotoOptions
     {
         WaitUntil = WaitUntilState.DOMContentLoaded,

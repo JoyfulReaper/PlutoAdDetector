@@ -402,3 +402,6 @@ FodyWeavers.xsd
 
 # PlutoAdDetector visual fallback artifacts
 /captures/
+
+# Dedicated Playwright browser state (never the user's normal Chrome profile)
+/browser-profile/
