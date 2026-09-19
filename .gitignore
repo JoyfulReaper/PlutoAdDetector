@@ -406,5 +406,5 @@ FodyWeavers.xsd
 # Dedicated Playwright browser state (never the user's normal Chrome profile)
 /browser-profile/
 
-# Automatic YouTube queue shutdown snapshot (restore is not implemented yet)
+# Automatic YouTube queue shutdown/restore snapshot
 /youtube-queue.json

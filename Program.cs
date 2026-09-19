@@ -21,11 +21,12 @@ if (options.ShowHelp)
 }
 
 using var shutdown = new CancellationTokenSource();
-Console.CancelKeyPress += (_, eventArgs) =>
+ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
 {
     eventArgs.Cancel = true;
     shutdown.Cancel();
 };
+Console.CancelKeyPress += cancelHandler;
 
 try
 {
@@ -40,6 +41,15 @@ catch (PlaywrightException exception)
 {
     Console.Error.WriteLine(exception.Message);
     return 1;
+}
+catch (Exception exception)
+{
+    Console.Error.WriteLine($"fatal error: {exception.Message}");
+    return 1;
+}
+finally
+{
+    Console.CancelKeyPress -= cancelHandler;
 }
 
 static async Task RunAsync(DetectorOptions options, CancellationToken cancellationToken)
@@ -96,16 +106,16 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     await using var context = await playwright.Chromium.LaunchPersistentContextAsync(
         browserProfileDirectory,
         new BrowserTypeLaunchPersistentContextOptions
-    {
-        Headless = options.Headless,
-        ExecutablePath = chromeExecutable,
-        ChromiumSandbox = true,
-        Args = ["--autoplay-policy=no-user-gesture-required"],
-        ViewportSize = options.Headless
+        {
+            Headless = options.Headless,
+            ExecutablePath = chromeExecutable,
+            ChromiumSandbox = true,
+            Args = ["--autoplay-policy=no-user-gesture-required"],
+            ViewportSize = options.Headless
             ? new ViewportSize { Width = 1440, Height = 900 }
             : ViewportSize.NoViewport,
-        Locale = "en-US"
-    });
+            Locale = "en-US"
+        });
     Console.Error.WriteLine(chromeExecutable is null
         ? "browser: Playwright Chromium"
         : $"browser: Google Chrome ({chromeExecutable})");
@@ -156,7 +166,6 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 
     bool? publishedState = null;
     bool? pendingState = null;
-    var activeDetectionMethod = "DOM";
     var pendingCount = 0;
     var everFoundSemanticIndicator = false;
     var nextCaptureAt = DateTimeOffset.UtcNow;
@@ -166,200 +175,220 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var queueRefreshPolicy = new YoutubeQueueRefreshPolicy(initialDiscoveryCompletedAt);
     var nextQueueDepthCheckAt = DateTimeOffset.UtcNow;
     Task<YoutubeDiscovery>? feedRefresh = null;
+    using var feedRefreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     var trackingPaused = false;
 
-    while (!cancellationToken.IsCancellationRequested)
+    try
     {
-        if (feedRefresh?.IsCompleted is true)
+        while (!cancellationToken.IsCancellationRequested)
         {
-            try
-            {
-                var discovery = await feedRefresh;
-                await youtubePage.EvaluateAsync("items => { window.youtubePlayerControls.refresh(items); }",
-                    discovery.Uploads.Select(item => new
-                    {
-                        id = item.Id,
-                        title = item.Title,
-                        automaticSkipReason = item.AutomaticSkipReason
-                    }).ToArray());
-            }
-            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
-            {
-                Console.Error.WriteLine($"youtube discovery refresh failed (queue retained): {exception.Message}");
-            }
-            finally
-            {
-                feedRefresh = null;
-                queueRefreshPolicy.RecordAttemptCompleted(DateTimeOffset.UtcNow);
-            }
-        }
-
-        var refreshCheckTime = DateTimeOffset.UtcNow;
-        if (automaticQueueMode &&
-            feedRefresh is null &&
-            refreshCheckTime >= nextQueueDepthCheckAt &&
-            queueRefreshPolicy.CooldownElapsed(refreshCheckTime))
-        {
-            nextQueueDepthCheckAt = refreshCheckTime.AddSeconds(5);
-            try
-            {
-                var remainingVideos = await GetYoutubeQueueRemainingCountAsync(youtubePage);
-                if (queueRefreshPolicy.ShouldRefresh(remainingVideos, refreshCheckTime))
-                {
-                    Console.Error.WriteLine(
-                        $"youtube discovery refresh triggered: automatic queue has {remainingVideos} remaining videos (threshold: {YoutubeQueueRefreshPolicy.RemainingVideoThreshold})");
-                    // Fetch asynchronously so slow RSS requests never block ad detection.
-                    feedRefresh = YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken);
-                }
-            }
-            catch (PlaywrightException exception)
-            {
-                Console.Error.WriteLine($"youtube queue depth check failed: {exception.Message}");
-            }
-        }
-
-        var toggleCount = Interlocked.Exchange(ref trackingToggleRequests, 0);
-        while (toggleCount-- > 0)
-        {
-            trackingPaused = !trackingPaused;
-            publishedState = null;
-            pendingState = null;
-            pendingCount = 0;
-            activeDetectionMethod = "DOM";
-
-            if (trackingPaused)
-            {
-                await PauseYoutubeAsync(youtubePage);
-                youtubePlaybackStarted = false;
-                loggedYoutubeError = null;
-                await sourcePage.BringToFrontAsync();
-                await SetSourceMutedAsync(sourcePage, muted: false);
-                Console.WriteLine("ad tracking paused");
-            }
-            else
-            {
-                Console.WriteLine("ad tracking resumed");
-            }
-        }
-
-        if (Interlocked.Exchange(ref queueRestoreRequests, 0) > 0)
-        {
-            if (!automaticQueueMode)
-            {
-                Console.Error.WriteLine("youtube queue restore skipped: R is unavailable in --youtube-url single-video mode");
-            }
-            else
+            if (feedRefresh?.IsCompleted is true)
             {
                 try
                 {
-                    var youtubeForegrounded = await youtubePage.EvaluateAsync<bool>(
-                        "() => document.visibilityState === 'visible'");
-                    if (!YoutubeQueueRestoreAccess.CanReload(trackingPaused, youtubeForegrounded))
-                    {
-                        Console.Error.WriteLine(
-                            "youtube queue restore skipped: R is allowed only while ad tracking is paused or YouTube is foregrounded");
-                    }
-                    else
-                    {
-                        var restoreResult = YoutubeQueueStateLoader.Load(
-                            queueStatePath,
-                            options.ChannelUrl,
-                            options.MinimumDurationSeconds,
-                            DateTimeOffset.UtcNow);
-                        if (restoreResult.Status == YoutubeQueueRestoreStatus.Succeeded &&
-                            restoreResult.BrowserState is not null)
+                    var discovery = await feedRefresh;
+                    await youtubePage.EvaluateAsync("items => { window.youtubePlayerControls.refresh(items); }",
+                        discovery.Uploads.Select(item => new
                         {
-                            var applyResult = await ApplyYoutubeQueueRestoreAsync(youtubePage, restoreResult.BrowserState);
-                            if (applyResult.Success)
-                                LogYoutubeQueueRestoreResult(restoreResult);
-                            else
-                                Console.Error.WriteLine($"youtube queue restore failed: {applyResult.Error ?? "Unknown player error."}");
-                        }
-                        else
-                        {
-                            LogYoutubeQueueRestoreResult(restoreResult);
-                        }
-                    }
+                            id = item.Id,
+                            title = item.Title,
+                            automaticSkipReason = item.AutomaticSkipReason
+                        }).ToArray());
                 }
                 catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
-                    Console.Error.WriteLine($"youtube queue restore failed: {exception.Message}");
+                    Console.Error.WriteLine($"youtube discovery refresh failed (queue retained): {exception.Message}");
+                }
+                finally
+                {
+                    feedRefresh = null;
+                    queueRefreshPolicy.RecordAttemptCompleted(DateTimeOffset.UtcNow);
                 }
             }
-        }
 
-        var sample = await DetectAsync(sourcePage, options.ScanMode);
-        // If P was pressed while detection was running, normalize tracking before
-        // this sample can trigger a switch. A resumed loop will take a new sample.
-        if (Volatile.Read(ref trackingToggleRequests) > 0)
-            continue;
+            var refreshCheckTime = DateTimeOffset.UtcNow;
+            if (automaticQueueMode &&
+                feedRefresh is null &&
+                refreshCheckTime >= nextQueueDepthCheckAt &&
+                queueRefreshPolicy.CooldownElapsed(refreshCheckTime))
+            {
+                nextQueueDepthCheckAt = refreshCheckTime.AddSeconds(5);
+                try
+                {
+                    var remainingVideos = await GetYoutubeQueueRemainingCountAsync(youtubePage);
+                    if (queueRefreshPolicy.ShouldRefresh(remainingVideos, refreshCheckTime))
+                    {
+                        Console.Error.WriteLine(
+                            $"youtube discovery refresh triggered: automatic queue has {remainingVideos} remaining videos (threshold: {YoutubeQueueRefreshPolicy.RemainingVideoThreshold})");
+                        // Fetch asynchronously so slow RSS requests never block ad detection.
+                        feedRefresh = YoutubeFeed.FetchAsync(options.ChannelUrl, feedRefreshCancellation.Token);
+                    }
+                }
+                catch (PlaywrightException exception)
+                {
+                    Console.Error.WriteLine($"youtube queue depth check failed: {exception.Message}");
+                }
+            }
 
-        if (trackingPaused)
-        {
+            var toggleCount = Interlocked.Exchange(ref trackingToggleRequests, 0);
+            while (toggleCount-- > 0)
+            {
+                trackingPaused = !trackingPaused;
+                publishedState = null;
+                pendingState = null;
+                pendingCount = 0;
+
+                if (trackingPaused)
+                {
+                    await PauseYoutubeAsync(youtubePage);
+                    youtubePlaybackStarted = false;
+                    loggedYoutubeError = null;
+                    await sourcePage.BringToFrontAsync();
+                    await SetSourceMutedAsync(sourcePage, muted: false);
+                    Console.WriteLine("ad tracking paused");
+                }
+                else
+                {
+                    Console.WriteLine("ad tracking resumed");
+                }
+            }
+
+            if (Interlocked.Exchange(ref queueRestoreRequests, 0) > 0)
+            {
+                if (!automaticQueueMode)
+                {
+                    Console.Error.WriteLine("youtube queue restore skipped: R is unavailable in --youtube-url single-video mode");
+                }
+                else
+                {
+                    try
+                    {
+                        var youtubeForegrounded = await youtubePage.EvaluateAsync<bool>(
+                            "() => document.visibilityState === 'visible'");
+                        if (!YoutubeQueueRestoreAccess.CanReload(trackingPaused, youtubeForegrounded))
+                        {
+                            Console.Error.WriteLine(
+                                "youtube queue restore skipped: R is allowed only while ad tracking is paused or YouTube is foregrounded");
+                        }
+                        else
+                        {
+                            var restoreResult = YoutubeQueueStateLoader.Load(
+                                queueStatePath,
+                                options.ChannelUrl,
+                                options.MinimumDurationSeconds,
+                                DateTimeOffset.UtcNow);
+                            if (restoreResult.Status == YoutubeQueueRestoreStatus.Succeeded &&
+                                restoreResult.BrowserState is not null)
+                            {
+                                var applyResult = await ApplyYoutubeQueueRestoreAsync(youtubePage, restoreResult.BrowserState);
+                                if (applyResult.Success)
+                                    LogYoutubeQueueRestoreResult(restoreResult);
+                                else
+                                    Console.Error.WriteLine($"youtube queue restore failed: {applyResult.Error ?? "Unknown player error."}");
+                            }
+                            else
+                            {
+                                LogYoutubeQueueRestoreResult(restoreResult);
+                            }
+                        }
+                    }
+                    catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        Console.Error.WriteLine($"youtube queue restore failed: {exception.Message}");
+                    }
+                }
+            }
+
+            var sample = await DetectAsync(sourcePage, options.ScanMode);
+            // If P was pressed while detection was running, normalize tracking before
+            // this sample can trigger a switch. A resumed loop will take a new sample.
+            if (Volatile.Read(ref trackingToggleRequests) > 0)
+                continue;
+
+            if (trackingPaused)
+            {
+                await Task.Delay(options.PollInterval, cancellationToken);
+                continue;
+            }
+
+            everFoundSemanticIndicator |= sample.IsAd;
+
+            if (pendingState == sample.IsAd)
+            {
+                pendingCount++;
+            }
+            else
+            {
+                pendingState = sample.IsAd;
+                pendingCount = 1;
+            }
+
+            if (pendingCount >= options.ConfirmationSamples && publishedState != sample.IsAd)
+            {
+                // A non-ad page load is baseline state, not an "ad ended" transition.
+                if (sample.IsAd)
+                {
+                    await SetSourceMutedAsync(sourcePage, muted: true);
+                    await youtubePage.BringToFrontAsync();
+                    youtubePlaybackStarted = await ResumeYoutubeAsync(youtubePage);
+                    loggedYoutubeError = null;
+                    nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow;
+                    Console.WriteLine($"ad started [{sample.Method}]");
+                    publishedState = true;
+                }
+                else if (publishedState is true)
+                {
+                    await PauseYoutubeAsync(youtubePage);
+                    youtubePlaybackStarted = false;
+                    loggedYoutubeError = null;
+                    await sourcePage.BringToFrontAsync();
+                    await SetSourceMutedAsync(sourcePage, muted: false);
+                    Console.WriteLine($"ad ended [{sample.Method}]");
+                    publishedState = false;
+                }
+            }
+
+            if (!everFoundSemanticIndicator &&
+                !sample.IsAd &&
+                sample.HasPlayer &&
+                DateTimeOffset.UtcNow >= nextCaptureAt)
+            {
+                await SaveDiagnosticCropAsync(sourcePage, sample, options.CaptureDirectory);
+                nextCaptureAt = DateTimeOffset.UtcNow.Add(options.CaptureInterval);
+            }
+
+            if (youtubePlaybackStarted && DateTimeOffset.UtcNow >= nextYoutubeHealthCheckAt)
+            {
+                var youtubeError = await DetectYoutubeErrorAsync(youtubePage);
+                if (youtubeError is not null && youtubeError != loggedYoutubeError)
+                {
+                    Console.Error.WriteLine($"youtube player error: {youtubeError}");
+                }
+
+                loggedYoutubeError = youtubeError;
+                nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow.AddSeconds(2);
+            }
+
             await Task.Delay(options.PollInterval, cancellationToken);
-            continue;
         }
-
-        everFoundSemanticIndicator |= sample.IsAd;
-
-        if (pendingState == sample.IsAd)
+    }
+    finally
+    {
+        await feedRefreshCancellation.CancelAsync();
+        if (feedRefresh is not null)
         {
-            pendingCount++;
-        }
-        else
-        {
-            pendingState = sample.IsAd;
-            pendingCount = 1;
-        }
-
-        if (pendingCount >= options.ConfirmationSamples && publishedState != sample.IsAd)
-        {
-            // A non-ad page load is baseline state, not an "ad ended" transition.
-            if (sample.IsAd)
+            try
             {
-                activeDetectionMethod = sample.Method;
-                await SetSourceMutedAsync(sourcePage, muted: true);
-                await youtubePage.BringToFrontAsync();
-                youtubePlaybackStarted = await ResumeYoutubeAsync(youtubePage);
-                loggedYoutubeError = null;
-                nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow;
-                Console.WriteLine($"ad started [{activeDetectionMethod}]");
-                publishedState = true;
+                await feedRefresh;
             }
-            else if (publishedState is true)
+            catch (OperationCanceledException) when (feedRefreshCancellation.IsCancellationRequested)
             {
-                await PauseYoutubeAsync(youtubePage);
-                youtubePlaybackStarted = false;
-                loggedYoutubeError = null;
-                await sourcePage.BringToFrontAsync();
-                await SetSourceMutedAsync(sourcePage, muted: false);
-                Console.WriteLine($"ad ended [{sample.Method}]");
-                publishedState = false;
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"youtube discovery refresh cleanup failed: {exception.Message}");
             }
         }
-
-        if (!everFoundSemanticIndicator &&
-            !sample.IsAd &&
-            sample.HasPlayer &&
-            DateTimeOffset.UtcNow >= nextCaptureAt)
-        {
-            await SaveDiagnosticCropAsync(sourcePage, sample, options.CaptureDirectory);
-            nextCaptureAt = DateTimeOffset.UtcNow.Add(options.CaptureInterval);
-        }
-
-        if (youtubePlaybackStarted && DateTimeOffset.UtcNow >= nextYoutubeHealthCheckAt)
-        {
-            var youtubeError = await DetectYoutubeErrorAsync(youtubePage);
-            if (youtubeError is not null && youtubeError != loggedYoutubeError)
-            {
-                Console.Error.WriteLine($"youtube player error: {youtubeError}");
-            }
-
-            loggedYoutubeError = youtubeError;
-            nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow.AddSeconds(2);
-        }
-
-        await Task.Delay(options.PollInterval, cancellationToken);
     }
 }
 
@@ -501,9 +530,9 @@ static async Task SaveDiagnosticCropAsync(IPage page, DetectionSample sample, st
             }
         });
     }
-    catch (PlaywrightException)
+    catch (PlaywrightException exception)
     {
-        // Captures are a best-effort visual fallback and must not stop detection.
+        Console.Error.WriteLine($"diagnostic capture failed (continuing): {exception.Message}");
     }
 }
 
@@ -518,187 +547,10 @@ internal sealed record DetectionSample(
 
 internal sealed record YoutubeControlResult(bool Success, string? Error);
 
-internal enum PlutoScanMode
-{
-    Focused,
-    Full
-}
-
 internal static class JsonOptions
 {
     internal static readonly JsonSerializerOptions Instance = new()
     {
         PropertyNameCaseInsensitive = true
     };
-}
-
-internal sealed record DetectorOptions(
-    string SourceUrl,
-    string ChannelUrl,
-    string? YoutubeVideoId,
-    int MinimumDurationSeconds,
-    bool Headless,
-    TimeSpan PollInterval,
-    int ConfirmationSamples,
-    string CaptureDirectory,
-    TimeSpan CaptureInterval,
-    PlutoScanMode ScanMode,
-    bool Resume,
-    bool ShowHelp)
-{
-    private const string DefaultSourceUrl = "https://pluto.tv/live-tv";
-
-    internal const string Usage = """
-        PlutoAdDetector
-          --headless                 Run Chromium without a visible window (headed is the default)
-          --url <url>                Source/streaming page URL (default: https://pluto.tv/live-tv)
-          --channel-url <url>        YouTube channel (default: https://www.youtube.com/@MeidasTouch)
-          --youtube-url <url>        Single video; bypass RSS and duration filtering (exclusive with --channel-url)
-          --min-duration-seconds <n> Minimum duration (default: 300)
-          --poll-ms <milliseconds>   Detection interval (default: 500)
-          --confirm <count>          Consecutive samples required for a transition (default: 2)
-          --scan-mode focused|full  DOM scan scope (default: focused; full scans the whole document)
-          --resume                   Restore automatic queue state from youtube-queue.json
-          --captures <directory>     Visual fallback directory (default: captures)
-          --capture-seconds <count>  Seconds between fallback crops (default: 30)
-          --help                     Show this help on standard error
-        """;
-
-    internal static DetectorOptions Parse(string[] args)
-    {
-        var sourceUrl = DefaultSourceUrl;
-        var channelUrl = "https://www.youtube.com/@MeidasTouch";
-        var channelExplicit = false;
-        string? youtubeUrl = null;
-        var minimumDurationSeconds = 300;
-        var headless = false;
-        var pollMilliseconds = 500;
-        var confirmationSamples = 2;
-        var captureDirectory = Path.GetFullPath("captures");
-        var captureSeconds = 30;
-        var scanMode = PlutoScanMode.Focused;
-        var resume = false;
-        var showHelp = false;
-
-        for (var index = 0; index < args.Length; index++)
-        {
-            string NextValue(string option)
-            {
-                if (++index >= args.Length)
-                {
-                    throw new ArgumentException($"Missing value for {option}.");
-                }
-
-                return args[index];
-            }
-
-            switch (args[index])
-            {
-                case "--headless":
-                    headless = true;
-                    break;
-                case "--channel-url":
-                    channelExplicit = true;
-                    channelUrl = NextValue("--channel-url");
-                    break;
-                case "--youtube-url":
-                    youtubeUrl = NextValue("--youtube-url");
-                    break;
-                case "--min-duration-seconds":
-                    minimumDurationSeconds = ParsePositiveInt(NextValue("--min-duration-seconds"), "--min-duration-seconds");
-                    break;
-                case "--url":
-                    sourceUrl = NextValue("--url");
-                    break;
-                case "--poll-ms":
-                    pollMilliseconds = ParsePositiveInt(NextValue("--poll-ms"), "--poll-ms");
-                    break;
-                case "--confirm":
-                    confirmationSamples = ParsePositiveInt(NextValue("--confirm"), "--confirm");
-                    break;
-                case "--scan-mode":
-                    scanMode = NextValue("--scan-mode").ToLowerInvariant() switch
-                    {
-                        "focused" => PlutoScanMode.Focused,
-                        "full" => PlutoScanMode.Full,
-                        _ => throw new ArgumentException("--scan-mode must be focused or full.")
-                    };
-                    break;
-                case "--resume":
-                    resume = true;
-                    break;
-                case "--captures":
-                    captureDirectory = Path.GetFullPath(NextValue("--captures"));
-                    break;
-                case "--capture-seconds":
-                    captureSeconds = ParsePositiveInt(NextValue("--capture-seconds"), "--capture-seconds");
-                    break;
-                case "--help" or "-h":
-                    showHelp = true;
-                    break;
-                default:
-                    throw new ArgumentException($"Unknown option: {args[index]}");
-            }
-        }
-
-        if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
-        {
-            throw new ArgumentException("--url must be an absolute HTTP or HTTPS URL.");
-        }
-
-
-        if (!Uri.TryCreate(channelUrl, UriKind.Absolute, out var channelUri) ||
-            channelUri.Scheme != "https" || channelUri.Host is not ("youtube.com" or "www.youtube.com" or "m.youtube.com") ||
-            !(channelUri.AbsolutePath.StartsWith("/@") || channelUri.AbsolutePath.StartsWith("/channel/")))
-            throw new ArgumentException("--channel-url must be a YouTube HTTPS channel or @handle URL.");
-        if (channelExplicit && youtubeUrl is not null)
-            throw new ArgumentException("--youtube-url and --channel-url cannot both be supplied.");
-        var youtubeVideoId = youtubeUrl is null ? null : ParseYoutubeVideoId(youtubeUrl);
-        return new DetectorOptions(
-            sourceUrl,
-            channelUrl,
-            youtubeVideoId,
-            minimumDurationSeconds,
-            headless,
-            TimeSpan.FromMilliseconds(pollMilliseconds),
-            confirmationSamples,
-            captureDirectory,
-            TimeSpan.FromSeconds(captureSeconds),
-            scanMode,
-            resume,
-            showHelp);
-    }
-
-    private static string ParseYoutubeVideoId(string value)
-    {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http"))
-            throw new ArgumentException("--youtube-url must be a YouTube video URL.");
-        string? id = null;
-        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (uri.Host is "youtu.be" or "www.youtu.be" && segments.Length == 1)
-            id = segments[0];
-        else if (uri.Host is "youtube.com" or "www.youtube.com" or "m.youtube.com")
-        {
-            if (uri.AbsolutePath == "/watch")
-                id = uri.Query.TrimStart('?').Split('&').Select(part => part.Split('=', 2))
-                    .Where(parts => parts.Length == 2 && parts[0] == "v")
-                    .Select(parts => Uri.UnescapeDataString(parts[1])).FirstOrDefault();
-            else if (segments.Length == 2 && segments[0] is "embed" or "shorts" or "live")
-                id = segments[1];
-        }
-        if (id is null || id.Length != 11 || !id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))
-            throw new ArgumentException("--youtube-url must contain a valid 11-character YouTube video ID (watch, youtu.be, embed, shorts, or live URL).");
-        return id;
-    }
-
-    private static int ParsePositiveInt(string value, string option)
-    {
-        if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var result) || result <= 0)
-        {
-            throw new ArgumentException($"{option} must be a positive integer.");
-        }
-
-        return result;
-    }
 }

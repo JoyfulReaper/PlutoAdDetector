@@ -135,8 +135,9 @@ internal static class YoutubeQueueStateLoader
         if (state.QueuedVideos.Length > 20)
             return new(YoutubeQueueRestoreStatus.Failed, "saved queue exceeds the 20-video limit", null);
         if (state.QueuedVideos.Any(video => video is null || !ValidId(video.Id) || string.IsNullOrWhiteSpace(video.Title) ||
-            !double.IsFinite(video.DurationSeconds) || video.DurationSeconds <= 0))
-            return new(YoutubeQueueRestoreStatus.Failed, "saved queue contains an invalid video", null);
+            !double.IsFinite(video.DurationSeconds) || video.DurationSeconds < minimumDurationSeconds))
+            return new(YoutubeQueueRestoreStatus.Failed,
+                "saved queue contains an invalid video or one below the configured minimum duration", null);
         if (state.QueuedVideos.Select(video => video.Id).Distinct(StringComparer.Ordinal).Count() != state.QueuedVideos.Length)
             return new(YoutubeQueueRestoreStatus.Failed, "saved queue contains duplicate video IDs", null);
         if (state.CompletedOrSkippedVideoIds.Any(id => !ValidId(id)) ||
@@ -176,8 +177,13 @@ internal static class YoutubeQueueStateLoader
         return CanonicalChannel(savedUri) == CanonicalChannel(currentUri);
     }
 
-    private static string CanonicalChannel(Uri uri) =>
-        $"{uri.Scheme.ToLowerInvariant()}://{uri.IdnHost.ToLowerInvariant()}{uri.AbsolutePath.TrimEnd('/')}";
+    private static string CanonicalChannel(Uri uri)
+    {
+        var path = uri.AbsolutePath.TrimEnd('/');
+        if (path.StartsWith("/@", StringComparison.OrdinalIgnoreCase))
+            path = path.ToLowerInvariant();
+        return $"{uri.Scheme.ToLowerInvariant()}://{uri.IdnHost.ToLowerInvariant()}{path}";
+    }
 
     private static bool ValidId(string? id) => id is { Length: 11 } &&
         id.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');

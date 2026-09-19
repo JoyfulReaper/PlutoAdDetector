@@ -9,6 +9,8 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
     private readonly CancellationTokenSource _shutdown = new();
     private readonly byte[] _response;
     private readonly Task _serverTask;
+    private readonly object _clientTasksLock = new();
+    private readonly HashSet<Task> _clientTasks = [];
 
     private LocalYoutubePlayerHost(TcpListener listener, string html)
     {
@@ -53,6 +55,15 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
         catch (OperationCanceledException)
         {
         }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"local YouTube player host shutdown failed: {exception.Message}");
+        }
+
+        Task[] clientTasks;
+        lock (_clientTasksLock)
+            clientTasks = [.. _clientTasks];
+        await Task.WhenAll(clientTasks);
 
         _shutdown.Dispose();
     }
@@ -70,9 +81,30 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
             {
                 break;
             }
+            catch (ObjectDisposedException) when (_shutdown.IsCancellationRequested)
+            {
+                break;
+            }
 
-            _ = RespondAsync(client);
+            TrackClient(RespondAsync(client));
         }
+    }
+
+    private void TrackClient(Task task)
+    {
+        lock (_clientTasksLock)
+            _clientTasks.Add(task);
+
+        _ = task.ContinueWith(
+            completedTask =>
+            {
+                _ = completedTask.Exception;
+                lock (_clientTasksLock)
+                    _clientTasks.Remove(completedTask);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private async Task RespondAsync(TcpClient client)
@@ -97,6 +129,10 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
             }
             catch (IOException)
             {
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"local YouTube player response failed: {exception.Message}");
             }
         }
     }
@@ -194,6 +230,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   current = queue[0] || null;
                   if (!current) {
                     lastError = 'Queue empty; waiting for the next feed refresh.';
+                    player.pauseVideo();
                     log(lastError);
                     return;
                   }

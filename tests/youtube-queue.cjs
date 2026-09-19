@@ -128,6 +128,17 @@ async function test() {
   const beforeIframeSkip = controls.getQueue().currentId;
   messageListeners[0]({ data: 'pluto-ad-detector:skip-youtube-video' });
   assert.notEqual(controls.getQueue().currentId, beforeIframeSkip);
+  const finalVideoState = {
+    currentVideo: { id: 'finalvideo1', title: 'Final video', playbackPositionSeconds: 10 },
+    queuedVideos: [{ id: 'finalvideo1', title: 'Final video', durationSeconds: 700 }],
+    completedOrSkippedVideoIds: []
+  };
+  controls.restoreQueue(finalVideoState);
+  controls.play();
+  assert.equal(players.player.playing, true);
+  assert.equal(controls.skip().success, true);
+  assert.equal(controls.getQueue().currentId, null);
+  assert.equal(players.player.playing, false);
   console.log('PASS: queue behavior, N/R shortcuts, H/? help overlay, restore position/order, and playback intent');
   delete players.probe;
   const singleKeys = [];

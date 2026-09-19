@@ -23,6 +23,8 @@ for (const args of [
   ['--scan-mode', 'wide'],
   ['--scan-mode'],
   ['--url', 'ftp://example.com/stream'],
-  ['--url', '/relative/stream']
+  ['--url', '/relative/stream'],
+  ['--channel-url', 'https://www.youtube.com/@MeidasTouch/videos'],
+  ['--channel-url', 'https://www.youtube.com/channel/not-a-channel-id']
 ]) assert.equal(run([...args, ...(args.length === 1 ? [] : ['--help'])]).status, 2);
 console.log('PASS: source URL compatibility/validation, scan modes, YouTube URL formats, missing values, and explicit-channel conflicts');

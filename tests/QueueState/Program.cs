@@ -32,7 +32,7 @@ Equal(false, YoutubeQueueStateSerializer.ShouldSave("AAAAAAAAAAA"));
 
 var restored = YoutubeQueueStateLoader.Parse(
     json,
-    "https://www.youtube.com/@MeidasTouch/",
+    "https://www.youtube.com/@meidastouch/",
     300,
     savedAt.AddHours(1));
 Equal(YoutubeQueueRestoreStatus.Succeeded, restored.Status);
@@ -63,13 +63,19 @@ var overlapJson = json.Replace(
     StringComparison.Ordinal);
 Equal(YoutubeQueueRestoreStatus.Failed, YoutubeQueueStateLoader.Parse(
     overlapJson, "https://www.youtube.com/@MeidasTouch", 300, savedAt.AddHours(1)).Status);
+var belowMinimumJson = json.Replace(
+    "\"durationSeconds\": 601.25",
+    "\"durationSeconds\": 299",
+    StringComparison.Ordinal);
+Equal(YoutubeQueueRestoreStatus.Failed, YoutubeQueueStateLoader.Parse(
+    belowMinimumJson, "https://www.youtube.com/@MeidasTouch", 300, savedAt.AddHours(1)).Status);
 var missingPath = Path.Combine(Path.GetTempPath(), $"pluto-queue-missing-{Guid.NewGuid():N}.json");
 Equal(YoutubeQueueRestoreStatus.Skipped, YoutubeQueueStateLoader.Load(
     missingPath, "https://www.youtube.com/@MeidasTouch", 300, savedAt.AddHours(1)).Status);
 Equal(false, YoutubeQueueRestoreAccess.CanReload(trackingPaused: false, youtubeForegrounded: false));
 Equal(true, YoutubeQueueRestoreAccess.CanReload(trackingPaused: true, youtubeForegrounded: false));
 Equal(true, YoutubeQueueRestoreAccess.CanReload(trackingPaused: false, youtubeForegrounded: true));
-Console.WriteLine("PASS: versioned queue schema, compatible restore, rejection paths, staleness, and single-video exclusion");
+Console.WriteLine("PASS: versioned queue schema, compatible restore, duration/integrity rejection, staleness, and single-video exclusion");
 
 static void Equal<T>(T expected, T actual)
 {
