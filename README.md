@@ -53,6 +53,10 @@ Press `N` while the local YouTube player page has keyboard focus to skip the
 current automatic-queue video. The video is considered completed for the run,
 removed from the queue, and the next video follows the current play/pause intent.
 The same operation is available as `window.youtubePlayerControls.skip()`.
+Press `P` in either browser tab to pause or resume ad tracking. Pausing stops ad
+switching, pauses YouTube, brings Pluto forward, and unmutes it. Resuming clears
+the detector's pending state and confirms the current state from fresh samples;
+neither operation changes the video queue.
 Automatic channel mode also uses channel-page renderer metadata to reject current
 live streams, scheduled/upcoming streams, unfinished premieres, and stream
 recordings before probing duration. Each rejection logs its title, ID, and reason.

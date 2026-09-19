@@ -81,6 +81,13 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
         : $"browser: Google Chrome ({chromeExecutable})");
     Console.Error.WriteLine($"browser profile: {browserProfileDirectory}");
 
+    var trackingToggleRequests = 0;
+    await context.ExposeFunctionAsync("requestAdTrackingToggle", () =>
+    {
+        Interlocked.Increment(ref trackingToggleRequests);
+    });
+    await context.AddInitScriptAsync(script: AdTrackingShortcut.Script);
+
     var plutoPage = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
     await plutoPage.GotoAsync(options.Url, new PageGotoOptions
     {
@@ -117,6 +124,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var nextYoutubeHealthCheckAt = DateTimeOffset.MinValue;
     var nextFeedRefreshAt = DateTimeOffset.UtcNow.AddMinutes(5);
     Task<YoutubeDiscovery>? feedRefresh = null;
+    var trackingPaused = false;
 
     while (!cancellationToken.IsCancellationRequested)
     {
@@ -144,7 +152,43 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             feedRefresh = null;
             nextFeedRefreshAt = DateTimeOffset.UtcNow.AddMinutes(5);
         }
+
+        var toggleCount = Interlocked.Exchange(ref trackingToggleRequests, 0);
+        while (toggleCount-- > 0)
+        {
+            trackingPaused = !trackingPaused;
+            publishedState = null;
+            pendingState = null;
+            pendingCount = 0;
+            activeDetectionMethod = "DOM";
+
+            if (trackingPaused)
+            {
+                await PauseYoutubeAsync(youtubePage);
+                youtubePlaybackStarted = false;
+                loggedYoutubeError = null;
+                await plutoPage.BringToFrontAsync();
+                await SetPlutoMutedAsync(plutoPage, muted: false);
+                Console.WriteLine("ad tracking paused");
+            }
+            else
+            {
+                Console.WriteLine("ad tracking resumed");
+            }
+        }
+
         var sample = await DetectAsync(plutoPage);
+        // If P was pressed while detection was running, normalize tracking before
+        // this sample can trigger a switch. A resumed loop will take a new sample.
+        if (Volatile.Read(ref trackingToggleRequests) > 0)
+            continue;
+
+        if (trackingPaused)
+        {
+            await Task.Delay(options.PollInterval, cancellationToken);
+            continue;
+        }
+
         everFoundSemanticIndicator |= sample.IsAd;
 
         if (pendingState == sample.IsAd)
