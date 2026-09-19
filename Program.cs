@@ -57,6 +57,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     {
         Headless = options.Headless,
         ExecutablePath = chromeExecutable,
+        ChromiumSandbox = true,
         Args = ["--autoplay-policy=no-user-gesture-required"],
         ViewportSize = options.Headless
             ? new ViewportSize { Width = 1440, Height = 900 }
