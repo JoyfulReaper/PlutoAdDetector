@@ -51,12 +51,12 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     try
     {
         candidates = options.YoutubeVideoId is null
-            ? await YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken)
+            ? (await YoutubeFeed.FetchAsync(options.ChannelUrl, cancellationToken)).Uploads
             : [];
     }
     catch (Exception exception) when (exception is HttpRequestException or System.Xml.XmlException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
     {
-        Console.Error.WriteLine($"youtube RSS failed: {exception.Message}");
+        Console.Error.WriteLine($"youtube discovery failed: {exception.Message}");
         candidates = [];
     }
     await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(candidates, options.MinimumDurationSeconds, options.YoutubeVideoId);
@@ -116,7 +116,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     string? loggedYoutubeError = null;
     var nextYoutubeHealthCheckAt = DateTimeOffset.MinValue;
     var nextFeedRefreshAt = DateTimeOffset.UtcNow.AddMinutes(5);
-    Task<YoutubeUpload[]>? feedRefresh = null;
+    Task<YoutubeDiscovery>? feedRefresh = null;
 
     while (!cancellationToken.IsCancellationRequested)
     {
@@ -127,14 +127,14 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
         {
             try
             {
-                var uploads = await feedRefresh;
+                var discovery = await feedRefresh;
                 await youtubePage.EvaluateAsync("items => { window.youtubePlayerControls.refresh(items); }",
-                    uploads.Select(item => new { id = item.Id, title = item.Title, published = item.Published }).ToArray());
+                    discovery.Uploads.Select(item => new { id = item.Id, title = item.Title }).ToArray());
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
                 exception is HttpRequestException or System.Xml.XmlException or TaskCanceledException)
             {
-                Console.Error.WriteLine($"youtube RSS refresh failed (queue retained): {exception.Message}");
+                Console.Error.WriteLine($"youtube discovery refresh failed (queue retained): {exception.Message}");
             }
             feedRefresh = null;
             nextFeedRefreshAt = DateTimeOffset.UtcNow.AddMinutes(5);

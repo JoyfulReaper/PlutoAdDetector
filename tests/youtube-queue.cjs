@@ -13,9 +13,9 @@ const context = { window: { location: { origin: 'http://127.0.0.1:1234' } },
   YT: { PlayerState: { ENDED: 0, PLAYING: 1 }, Player: class {
     constructor(id, options) { players[id] = this; this.events = options.events; this.id = ''; this.playing = false; this.loads = 0; }
     mute() {} unMute() {}
-    loadVideoById(id) { this.loads++; this.id = id; this.playing = true; if (id === 'error') this.events.onError({ data: 150 }); }
+    loadVideoById(id) { this.loads++; this.metadataReads = 0; this.id = id; this.playing = true; if (id === 'error') this.events.onError({ data: 150 }); }
     cueVideoById(id) { this.loads++; this.id = id; this.playing = false; }
-    getVideoData() { return { video_id: this.id }; }
+    getVideoData() { return this.metadataReads++ === 0 ? undefined : { video_id: this.id }; }
     getDuration() { return { short: 299, boundary: 300, error: 0 }[this.id] ?? 600; }
     pauseVideo() { this.playing = false; }
     playVideo() { this.playing = true; }
@@ -44,16 +44,16 @@ async function test() {
   assert.equal(queue.videos.length, 20);
   assert.equal(new Set(queue.videos.map(x => x.id)).size, 20);
   assert.equal(queue.currentId, 'boundary');
-  assert.equal(queue.videos[1].id, 'new24');
+  assert.equal(queue.videos[1].id, 'new0');
   assert.equal(players.player.loads, loads); // Refresh did not reset position or reload.
   assert.equal(players.player.playing, true);
   players.player.events.onStateChange({ data: 0 });
-  assert.equal(players.player.id, 'new24');
+  assert.equal(players.player.id, 'new0');
   controls.pause();
   controls.refresh([...additions, ...candidates]);
   await waitRefresh(3);
   assert.equal(players.player.playing, false);
-  assert.equal(controls.getQueue().currentId, 'new24');
+  assert.equal(controls.getQueue().currentId, 'new0');
   assert(!controls.getQueue().videos.some(x => x.id === 'boundary'));
   console.log('PASS: duration filtering, skip logs, deduplication, newest-first ordering, cap, current preservation, advancement and pause during refresh');
   delete players.probe;

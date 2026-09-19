@@ -37,7 +37,12 @@ playback starts.
 Use `dotnet run -- --headless` to hide Chromium. Run `dotnet run -- --help` for
 polling, confirmation, Pluto URL, and capture options.
 
-At startup, the public MeidasTouch RSS feed supplies recent uploads (no API key).
+At startup, the public channel RSS feed supplies recent uploads (no API key).
+If RSS returns an error or malformed content, discovery falls back to the channel's
+`/videos` page and reads normal-video IDs and titles from its embedded
+`ytInitialData`. Shorts-style renderers are ignored and channel-page order is
+preserved. Logs identify the discovery source. If both methods fail during a
+refresh, the existing queue remains intact.
 The feed refreshes every five minutes without blocking Pluto detection. A separate
 muted IFrame player checks durations without interrupting the current video.
 The queue holds at most 20 valid videos, retaining the current video and ordering

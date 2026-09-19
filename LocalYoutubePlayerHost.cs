@@ -165,7 +165,7 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   try {
                   const valid = [];
                   const seen = new Set();
-                  for (const item of [...items].sort((a, b) => Date.parse(b.published) - Date.parse(a.published))) {
+                  for (const item of items) {
                     const { id, title } = item;
                     if (seen.has(id) || completed.has(id) || id === current?.id) continue;
                     seen.add(id);
@@ -179,7 +179,8 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                     for (let attempt = 0; attempt < 60; attempt++) {
                       await delay(250);
                       if (probeError) break;
-                      if (probe.getVideoData().video_id === id) {
+                      const videoData = probe.getVideoData?.();
+                      if (videoData?.video_id === id) {
                         duration = probe.getDuration();
                         if (Number.isFinite(duration) && duration > 0) break;
                       }
@@ -194,9 +195,10 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                     }
                   }
                   // Re-read current/completed after async probing: playback may have advanced.
-                  const merged = new Map([...queue, ...valid].map(item => [item.id, item]));
-                  const waiting = [...merged.values()].filter(item => !completed.has(item.id) && item.id !== current?.id)
-                    .sort((a, b) => Date.parse(b.published) - Date.parse(a.published));
+                  const retained = queue.filter(item => !valid.some(fresh => fresh.id === item.id));
+                  const waiting = [...valid, ...retained]
+                    .filter(item => !completed.has(item.id) && item.id !== current?.id)
+                    .filter((item, position, all) => all.findIndex(candidate => candidate.id === item.id) === position);
                   queue = [...(current ? [current] : []), ...waiting].slice(0, 20);
                   if (!current) selectCurrent();
                   log(`refreshed (${queue.length}/20): ` + queue.map(item =>
