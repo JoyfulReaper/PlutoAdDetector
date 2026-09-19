@@ -47,7 +47,17 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     Directory.CreateDirectory(options.CaptureDirectory);
     var browserProfileDirectory = Path.GetFullPath("browser-profile");
     Directory.CreateDirectory(browserProfileDirectory);
-    await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(options.YoutubeUrl);
+    string[] candidates;
+    try
+    {
+        candidates = await YoutubeFeed.FetchAsync(cancellationToken);
+    }
+    catch (Exception exception) when (exception is HttpRequestException or System.Xml.XmlException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
+    {
+        Console.Error.WriteLine($"youtube RSS failed: {exception.Message}");
+        candidates = [];
+    }
+    await using var youtubePlayerHost = LocalYoutubePlayerHost.Start(candidates);
 
     using var playwright = await Playwright.CreateAsync();
     var chromeExecutable = FindInstalledGoogleChrome();
@@ -77,6 +87,11 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     });
 
     var youtubePage = await context.NewPageAsync();
+    youtubePage.Console += (_, message) =>
+    {
+        if (message.Text.StartsWith("youtube queue:", StringComparison.Ordinal))
+            Console.Error.WriteLine(message.Text);
+    };
     await youtubePage.GotoAsync(youtubePlayerHost.Url.AbsoluteUri, new PageGotoOptions
     {
         WaitUntil = WaitUntilState.DOMContentLoaded,
@@ -353,7 +368,6 @@ internal static class JsonOptions
 
 internal sealed record DetectorOptions(
     string Url,
-    string YoutubeUrl,
     bool Headless,
     TimeSpan PollInterval,
     int ConfirmationSamples,
@@ -362,13 +376,11 @@ internal sealed record DetectorOptions(
     bool ShowHelp)
 {
     private const string DefaultUrl = "https://pluto.tv/live-tv";
-    private const string DefaultYoutubeUrl = "https://www.youtube.com/watch?v=M7lc1UVf-VE";
 
     internal const string Usage = """
         PlutoAdDetector
           --headless                 Run Chromium without a visible window (headed is the default)
           --url <url>                Pluto URL (default: https://pluto.tv/live-tv)
-          --youtube-url <url>        Test YouTube video URL
           --poll-ms <milliseconds>   Detection interval (default: 500)
           --confirm <count>          Consecutive samples required for a transition (default: 2)
           --captures <directory>     Visual fallback directory (default: captures)
@@ -379,7 +391,6 @@ internal sealed record DetectorOptions(
     internal static DetectorOptions Parse(string[] args)
     {
         var url = DefaultUrl;
-        var youtubeUrl = DefaultYoutubeUrl;
         var headless = false;
         var pollMilliseconds = 500;
         var confirmationSamples = 2;
@@ -407,9 +418,6 @@ internal sealed record DetectorOptions(
                 case "--url":
                     url = NextValue("--url");
                     break;
-                case "--youtube-url":
-                    youtubeUrl = NextValue("--youtube-url");
-                    break;
                 case "--poll-ms":
                     pollMilliseconds = ParsePositiveInt(NextValue("--poll-ms"), "--poll-ms");
                     break;
@@ -436,16 +444,9 @@ internal sealed record DetectorOptions(
             throw new ArgumentException("--url must be an absolute HTTP or HTTPS URL.");
         }
 
-        if (!Uri.TryCreate(youtubeUrl, UriKind.Absolute, out var youtubeUri) ||
-            (youtubeUri.Scheme != Uri.UriSchemeHttps && youtubeUri.Scheme != Uri.UriSchemeHttp))
-        {
-            throw new ArgumentException("--youtube-url must be an absolute HTTP or HTTPS URL.");
-        }
-        _ = LocalYoutubePlayerHost.GetVideoId(youtubeUrl);
 
         return new DetectorOptions(
             url,
-            youtubeUrl,
             headless,
             TimeSpan.FromMilliseconds(pollMilliseconds),
             confirmationSamples,

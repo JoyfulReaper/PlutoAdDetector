@@ -29,49 +29,13 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
 
     internal Uri Url { get; }
 
-    internal static LocalYoutubePlayerHost Start(string videoUrl)
+    internal static LocalYoutubePlayerHost Start(string[] candidates)
     {
-        var videoId = GetVideoId(videoUrl);
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
-        return new LocalYoutubePlayerHost(listener, CreateHtml(videoId));
+        return new LocalYoutubePlayerHost(listener, CreateHtml(candidates));
     }
 
-    internal static string GetVideoId(string videoUrl)
-    {
-        var uri = new Uri(videoUrl, UriKind.Absolute);
-        var host = uri.Host.ToLowerInvariant();
-
-        if (host is "youtu.be" or "www.youtu.be")
-        {
-            return ValidateVideoId(uri.AbsolutePath.Trim('/'));
-        }
-
-        if (host is "youtube.com" or "www.youtube.com" or "m.youtube.com")
-        {
-            if (uri.AbsolutePath.Equals("/watch", StringComparison.OrdinalIgnoreCase))
-            {
-                foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
-                {
-                    var parts = pair.Split('=', 2);
-                    if (parts.Length == 2 && parts[0].Equals("v", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return ValidateVideoId(Uri.UnescapeDataString(parts[1]));
-                    }
-                }
-            }
-
-            var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (segments.Length >= 2 &&
-                (segments[0].Equals("embed", StringComparison.OrdinalIgnoreCase) ||
-                 segments[0].Equals("shorts", StringComparison.OrdinalIgnoreCase)))
-            {
-                return ValidateVideoId(segments[1]);
-            }
-        }
-
-        throw new ArgumentException("--youtube-url must identify a YouTube watch, short, embed, or youtu.be video.");
-    }
 
     public async ValueTask DisposeAsync()
     {
@@ -133,20 +97,10 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
         }
     }
 
-    private static string ValidateVideoId(string value)
-    {
-        if (value.Length is < 6 or > 20 || value.Any(character =>
-                !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_'))
-        {
-            throw new ArgumentException("--youtube-url contains an invalid YouTube video ID.");
-        }
 
-        return value;
-    }
-
-    private static string CreateHtml(string videoId)
+    private static string CreateHtml(string[] candidates)
     {
-        var videoIdJson = JsonSerializer.Serialize(videoId);
+        var candidatesJson = JsonSerializer.Serialize(candidates);
         return $$"""
             <!doctype html>
             <html lang="en">
@@ -169,10 +123,60 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
             <body>
               <div id="player"></div>
               <script>
-                const videoId = {{videoIdJson}};
+                const candidates = {{candidatesJson}};
                 let player;
                 let ready = false;
                 let lastError = null;
+                const queue = [];
+                let index = -1;
+                let preparing = true;
+                let wantsPlayback = false;
+                let probeError = null;
+                const log = message => console.log(`youtube queue: ${message}`);
+                const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+                function selectCurrent() {
+                  if (index >= queue.length) {
+                    lastError = 'Queue exhausted; restart to fetch recent uploads.';
+                    log(lastError);
+                    return;
+                  }
+                  lastError = null;
+                  log(`selected ${queue[index].id} (${Math.round(queue[index].duration)} seconds)`);
+                  player.unMute();
+                  if (wantsPlayback) player.loadVideoById(queue[index].id);
+                  else player.cueVideoById(queue[index].id);
+                }
+
+                async function prepareQueue() {
+                  for (const id of candidates) {
+                    probeError = null;
+                    player.mute();
+                    player.loadVideoById(id);
+                    let duration = 0;
+                    // Metadata is not available immediately. Verify the loaded ID so a
+                    // previous candidate's duration cannot admit a short video.
+                    for (let attempt = 0; attempt < 60; attempt++) {
+                      await delay(250);
+                      if (probeError) break;
+                      if (player.getVideoData().video_id === id) {
+                        duration = player.getDuration();
+                        if (Number.isFinite(duration) && duration > 0) break;
+                      }
+                    }
+                    player.pauseVideo();
+                    if (!probeError && Number.isFinite(duration) && duration >= 300) {
+                      queue.push({ id, duration });
+                      log(`added ${id} (${Math.round(duration)} seconds)`);
+                    } else {
+                      log(`skipped ${id}: ${probeError || (duration > 0 ? 'under 5 minutes' : 'duration unavailable')}`);
+                    }
+                  }
+                  preparing = false;
+                  index = 0;
+                  log(`${queue.length} eligible videos, newest first`);
+                  selectCurrent();
+                }
 
                 const errorNames = {
                   2: 'Invalid video ID or parameter',
@@ -188,7 +192,11 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   play: () => {
                     if (!ready) return { success: false, error: 'YouTube IFrame player is not ready.' };
                     try {
+                      wantsPlayback = true;
+                      if (preparing) return { success: true, error: null };
+                      if (index >= queue.length) return { success: false, error: lastError || 'Queue exhausted.' };
                       lastError = null;
+                      player.unMute();
                       player.playVideo();
                       return { success: true, error: null };
                     } catch (error) {
@@ -196,9 +204,10 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                     }
                   },
                   pause: () => {
+                    wantsPlayback = false;
                     if (!ready) return { success: false, error: 'YouTube IFrame player is not ready.' };
                     try {
-                      player.pauseVideo();
+                      if (!preparing) player.pauseVideo();
                       return { success: true, error: null };
                     } catch (error) {
                       return { success: false, error: `${error?.name || 'Error'}: ${error?.message || String(error)}` };
@@ -211,7 +220,6 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   player = new YT.Player('player', {
                     width: '100%',
                     height: '100%',
-                    videoId,
                     playerVars: {
                       autoplay: 0,
                       controls: 1,
@@ -221,11 +229,28 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                     events: {
                       onReady: () => {
                         ready = true;
-                        player.pauseVideo();
+                        prepareQueue().catch(error => {
+                          preparing = false;
+                          index = queue.length;
+                          player.pauseVideo();
+                          lastError = `Queue preparation failed: ${error.message || error}`;
+                          log(lastError);
+                        });
+                      },
+                      onStateChange: event => {
+                        if (preparing) return;
+                        if (event.data === YT.PlayerState.ENDED && index < queue.length) {
+                          index++;
+                          selectCurrent();
+                        } else if (event.data === YT.PlayerState.PLAYING && !wantsPlayback) {
+                          player.pauseVideo();
+                        }
                       },
                       onError: event => {
                         const detail = errorNames[event.data] || 'Unknown YouTube player error';
-                        lastError = `YouTube IFrame API error ${event.data}: ${detail}`;
+                        const message = `YouTube IFrame API error ${event.data}: ${detail}`;
+                        if (preparing) probeError = message;
+                        else lastError = message;
                       }
                     }
                   });

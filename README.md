@@ -28,13 +28,20 @@ that executable; otherwise it falls back to Playwright's bundled Chromium. It
 uses a dedicated persistent profile under `browser-profile/`, so cookies and
 browser state survive between runs without using or modifying the normal Chrome
 profile. The headed browser remains available for normal interaction. A second
-tab opens a loopback-hosted local page that embeds the configurable video through
+tab opens a loopback-hosted local page that embeds recent MeidasTouch uploads through
 the YouTube IFrame Player API. When an ad starts, Pluto is muted and the embedded
 player is brought forward and resumed. When the ad ends, it is paused and Pluto
 is brought forward and unmuted. YouTube IFrame API errors are logged after
 playback starts.
 
 Use `dotnet run -- --headless` to hide Chromium. Run `dotnet run -- --help` for
-polling, confirmation, URL, YouTube URL, and capture options.
+polling, confirmation, Pluto URL, and capture options.
 
-The test video can be changed with `--youtube-url <url>`.
+At startup, the public MeidasTouch RSS feed supplies recent uploads (no API key).
+The IFrame API loads candidates muted to obtain their durations; only videos at
+least 300 seconds long enter the queue, newest first. Unavailable videos and
+metadata timeouts are skipped. Preparation can take several minutes. Playback
+requests during preparation are remembered, and an ad ending cancels that intent.
+The current video resumes between ad breaks and advances when it ends. The queue
+is fetched once per run; exhaustion or RSS failures are logged. Restart to refresh.
+The former `--youtube-url` option has been removed.
