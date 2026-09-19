@@ -155,19 +155,21 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
               <meta name="viewport" content="width=device-width, initial-scale=1">
               <title>PlutoAdDetector YouTube Player</title>
               <style>
-                html, body { width: 100%; height: 100%; margin: 0; background: #000; overflow: hidden; }
-                #player { width: 100%; height: 100%; }
-                #status { position: fixed; left: 12px; bottom: 12px; z-index: 10; padding: 6px 9px;
-                          border-radius: 4px; color: #fff; background: rgba(0, 0, 0, .72);
-                          font: 13px system-ui, sans-serif; pointer-events: none; }
+                html, body, #player {
+                  width: 100%;
+                  height: 100%;
+                  margin: 0;
+                  padding: 0;
+                  overflow: hidden;
+                  background: #000;
+                }
+                #player { display: block; border: 0; }
               </style>
             </head>
             <body>
               <div id="player"></div>
-              <div id="status">Loading YouTube player…</div>
               <script>
                 const videoId = {{videoIdJson}};
-                const status = document.getElementById('status');
                 let player;
                 let ready = false;
                 let lastError = null;
@@ -220,17 +222,10 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                       onReady: () => {
                         ready = true;
                         player.pauseVideo();
-                        status.textContent = 'YouTube ready';
-                      },
-                      onStateChange: event => {
-                        if (event.data === YT.PlayerState.PLAYING) status.textContent = 'YouTube playing';
-                        if (event.data === YT.PlayerState.PAUSED) status.textContent = 'YouTube paused';
-                        if (event.data === YT.PlayerState.ENDED) status.textContent = 'YouTube ended';
                       },
                       onError: event => {
                         const detail = errorNames[event.data] || 'Unknown YouTube player error';
                         lastError = `YouTube IFrame API error ${event.data}: ${detail}`;
-                        status.textContent = lastError;
                       }
                     }
                   });
