@@ -26,14 +26,16 @@ internal static class PlutoDetectionScript
             right: Math.min(innerWidth, p.left + Math.min(p.width * 0.45, 640)),
             bottom: Math.min(innerHeight, p.top + Math.min(p.height * 0.30, 260))
           };
-          const intersects = rect => rect.right > region.left && rect.left < region.right &&
-                                     rect.bottom > region.top && rect.top < region.bottom;
+          const viewport = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+          const intersects = (rect, bounds) => rect.right > bounds.left && rect.left < bounds.right &&
+                                               rect.bottom > bounds.top && rect.top < bounds.bottom;
           const adWords = /\b(ad|ads|advertisement|commercial break|sponsored)\b/i;
           const adIdentity = /(^|[-_])(ad|ads|advert|advertisement)([-_]|$)|adbadge|adindicator|adcountdown/i;
 
           let candidates;
           if (mode === 'full') {
-            // Preserve the original whole-document scan for fallback/debugging.
+            // Enumerate the whole DOM for fallback/debugging, then evaluate visible
+            // candidates across the viewport instead of only the focused player region.
             candidates = document.querySelectorAll('*');
           } else {
             const candidateSet = new Set();
@@ -81,11 +83,18 @@ internal static class PlutoDetectionScript
           }
 
           let isAd = false;
+          const scanBounds = mode === 'full' ? viewport : region;
           for (const element of candidates) {
+            if (mode === 'full' && (element === document.body || element === document.documentElement)) continue;
             const rect = element.getBoundingClientRect();
-            if (!intersects(rect) || !visible(element, rect)) continue;
-            if (rect.width > (region.right - region.left) * 1.5 ||
-                rect.height > (region.bottom - region.top) * 1.5) continue;
+            if (!intersects(rect, scanBounds) || !visible(element, rect)) continue;
+            if (mode === 'full') {
+              const coversMostViewport = rect.width >= innerWidth * 0.65 &&
+                rect.height >= innerHeight * 0.65 &&
+                rect.width * rect.height >= innerWidth * innerHeight * 0.50;
+              if (coversMostViewport) continue;
+            } else if (rect.width > (region.right - region.left) * 1.5 ||
+                       rect.height > (region.bottom - region.top) * 1.5) continue;
 
             const text = (element.innerText || element.textContent || '').trim().replace(/\s+/g, ' ');
             const aria = element.getAttribute('aria-label') || '';

@@ -131,9 +131,11 @@ The default `focused` scan finds the largest visible video and inspects targeted
 text, ARIA/title/role/test-ID candidates plus a bounded hit-test grid in the
 player's upper-left region. It does not iterate over every DOM element every poll.
 
-`--scan-mode full` preserves the original whole-document DOM scan as a debugging
-fallback. Both modes return the same `[DOM]` detection result shape and use the
-same debounce settings (500 ms polling and two confirming samples by default).
+`--scan-mode full` enumerates the whole DOM and evaluates visible candidates
+across the viewport, while ignoring enormous page-wide wrappers. It is intended
+as a debugging fallback. Both modes return the same `[DOM]` detection result
+shape and use the same debounce settings (500 ms polling and two confirming
+samples by default).
 
 `--url` accepts any absolute HTTP or HTTPS source/streaming page. Muting and tab
 switching remain available for experimentation, but the detector profile is

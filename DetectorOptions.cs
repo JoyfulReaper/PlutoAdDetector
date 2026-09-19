@@ -31,7 +31,7 @@ internal sealed record DetectorOptions(
           --min-duration-seconds <n> Minimum duration (default: 300)
           --poll-ms <milliseconds>   Detection interval (default: 500)
           --confirm <count>          Consecutive samples required for a transition (default: 2)
-          --scan-mode focused|full  DOM scan scope (default: focused; full scans the whole document)
+          --scan-mode focused|full  DOM scan scope (default: focused; full scans the visible viewport)
           --resume                   Restore automatic queue state from youtube-queue.json
           --captures <directory>     Visual fallback directory (default: captures)
           --capture-seconds <count>  Seconds between fallback crops (default: 30)

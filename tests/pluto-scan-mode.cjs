@@ -16,21 +16,34 @@ const ad = element(rect(8, 8, 90, 24), {
   innerText: 'Ad 0:30',
   attributes: { 'aria-label': 'Advertisement countdown', role: 'status' }
 });
+const outsideFocusedRegionAd = element(rect(700, 50, 120, 24), {
+  parentElement: container,
+  innerText: 'Advertisement 0:30',
+  attributes: { role: 'status' }
+});
+const enormousWrapper = element(rect(0, 0, 1200, 800), {
+  parentElement: body,
+  innerText: 'Advertisement'
+});
 const unrelated = Array.from({ length: 100 }, (_, index) =>
   element(rect(700, 400 + index, 10, 10), { parentElement: body, innerText: 'ordinary page text' }));
-container.querySelectorAll = () => [ad];
+let semanticCandidates = [ad];
+let allCandidates = [container, largeVideo, smallVideo, ad, ...unrelated];
+let hitElement = ad;
+container.querySelectorAll = () => semanticCandidates;
 
 const calls = [];
 const videos = [smallVideo, largeVideo];
 const document = {
   body,
+  documentElement: {},
   querySelectorAll(selector) {
     calls.push(selector);
     if (selector === 'video') return videos;
-    if (selector === '*') return [container, largeVideo, smallVideo, ad, ...unrelated];
-    return [ad];
+    if (selector === '*') return allCandidates;
+    return semanticCandidates;
   },
-  elementFromPoint() { return ad; }
+  elementFromPoint() { return hitElement; }
 };
 const detector = vm.runInNewContext(`(${script})`, {
   document,
@@ -53,12 +66,28 @@ calls.length = 0;
 const full = JSON.parse(detector('full'));
 assert.equal(full.isAd, true);
 assert(calls.includes('*'), 'Full mode must preserve the whole-document scan.');
+assert.equal(full.width, 450, 'Full mode must retain player-region diagnostic crop coordinates.');
+assert.equal(full.height, 180, 'Full mode must retain player-region diagnostic crop coordinates.');
+
+semanticCandidates = [outsideFocusedRegionAd];
+allCandidates = [container, largeVideo, smallVideo, outsideFocusedRegionAd, ...unrelated];
+hitElement = largeVideo;
+calls.length = 0;
+const focusedOutside = JSON.parse(detector('focused'));
+assert.equal(focusedOutside.isAd, false, 'Focused mode must ignore candidates outside the player upper-left region.');
+const fullOutside = JSON.parse(detector('full'));
+assert.equal(fullOutside.isAd, true, 'Full mode must inspect candidates across the visible viewport.');
+
+semanticCandidates = [];
+allCandidates = [enormousWrapper];
+const fullWrapperOnly = JSON.parse(detector('full'));
+assert.equal(fullWrapperOnly.isAd, false, 'Full mode must ignore enormous application-wide wrappers.');
 
 videos.length = 0;
 const noPlayer = JSON.parse(detector('focused'));
 assert.equal(noPlayer.isAd, false);
 assert.equal(noPlayer.hasPlayer, false);
-console.log('PASS: focused mode avoids whole-DOM iteration and full mode preserves it');
+console.log('PASS: focused mode remains region-bound; full mode scans the viewport and ignores enormous wrappers');
 
 function element(box, options = {}) {
   const attributes = options.attributes || {};
