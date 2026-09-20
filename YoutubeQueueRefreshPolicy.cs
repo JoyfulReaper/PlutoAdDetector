@@ -17,3 +17,14 @@ internal sealed class YoutubeQueueRefreshPolicy(DateTimeOffset initialAttemptCom
         _nextAttemptAt = completedAt.Add(AttemptCooldown);
     }
 }
+
+internal sealed class YoutubeFeedDiscoveryGeneration
+{
+    private long _current;
+
+    internal long Capture() => _current;
+
+    internal void RecordSuccessfulQueueRestore() => _current++;
+
+    internal bool IsCurrent(long capturedGeneration) => capturedGeneration == _current;
+}

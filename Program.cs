@@ -212,6 +212,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var nextQueueDepthCheckAt = DateTimeOffset.UtcNow;
     var nextQueueSnapshotAt = DateTimeOffset.UtcNow.Add(YoutubeQueueStateSaver.CacheRefreshInterval);
     Task<YoutubeDiscovery>? feedRefresh = null;
+    var feedDiscoveryGeneration = new YoutubeFeedDiscoveryGeneration();
+    long feedRefreshGeneration = 0;
     using var feedRefreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     var trackingPaused = false;
     Task<VisualSignatureTrainingResult>? visualTraining = null;
@@ -464,13 +466,21 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 try
                 {
                     var discovery = await feedRefresh;
-                    await youtubePage.EvaluateAsync("items => { window.youtubePlayerControls.refresh(items); }",
-                        discovery.Uploads.Select(item => new
-                        {
-                            id = item.Id,
-                            title = item.Title,
-                            automaticSkipReason = item.AutomaticSkipReason
-                        }).ToArray());
+                    if (!feedDiscoveryGeneration.IsCurrent(feedRefreshGeneration))
+                    {
+                        Console.Error.WriteLine(
+                            "youtube discovery refresh discarded: queue was manually restored");
+                    }
+                    else
+                    {
+                        await youtubePage.EvaluateAsync("items => { window.youtubePlayerControls.refresh(items); }",
+                            discovery.Uploads.Select(item => new
+                            {
+                                id = item.Id,
+                                title = item.Title,
+                                automaticSkipReason = item.AutomaticSkipReason
+                            }).ToArray());
+                    }
                 }
                 catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
@@ -505,6 +515,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                         Console.Error.WriteLine(
                             $"youtube discovery refresh triggered: automatic queue has {queueStatus.RemainingVideos} remaining videos (threshold: {YoutubeQueueRefreshPolicy.RemainingVideoThreshold})");
                         // Fetch asynchronously so slow RSS requests never block ad detection.
+                        feedRefreshGeneration = feedDiscoveryGeneration.Capture();
                         feedRefresh = YoutubeFeed.FetchAsync(options.ChannelUrl, feedRefreshCancellation.Token);
                     }
                 }
@@ -600,6 +611,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                                 var applyResult = await ApplyYoutubeQueueRestoreAsync(youtubePage, restoreResult.BrowserState);
                                 if (applyResult.Success)
                                 {
+                                    feedDiscoveryGeneration.RecordSuccessfulQueueRestore();
                                     youtubeQueueStateSaver.CacheSnapshot(restoreResult.BrowserState);
                                     LogYoutubeQueueRestoreResult(restoreResult);
                                 }
