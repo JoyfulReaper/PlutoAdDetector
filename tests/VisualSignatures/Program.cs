@@ -245,13 +245,28 @@ try
     Equal(false, VisualBlockPolicy.ShouldTimeout(
         stateAfterDomHandoff, domAdConfirmed: true, visualStartAt.AddSeconds(30)));
     Equal(true, VisualBlockPolicy.RequiresSwitchForDomStart(null));
+
+    var recovery = new DetectorRecoveryBaseline();
+    recovery.Begin();
+    Equal(true, recovery.IsAwaiting);
+    Equal(0, recovery.CleanSampleCount);
+    // Positive samples are ignored as transitions and reset clean-baseline progress.
+    Equal(false, recovery.Observe(isAd: false, requiredCleanSamples: 2));
+    Equal(1, recovery.CleanSampleCount);
+    Equal(false, recovery.Observe(isAd: true, requiredCleanSamples: 2));
+    Equal(true, recovery.IsAwaiting);
+    Equal(0, recovery.CleanSampleCount);
+    Equal(false, recovery.Observe(isAd: false, requiredCleanSamples: 2));
+    Equal(true, recovery.Observe(isAd: false, requiredCleanSamples: 2));
+    Equal(false, recovery.IsAwaiting);
+    Equal(0, recovery.CleanSampleCount);
 }
 finally
 {
     Directory.Delete(testDirectory, recursive: true);
 }
 
-Console.WriteLine("PASS: visual persistence/matching plus visual block start, timeout, pause/DOM rejection, and seamless DOM handoff policy");
+Console.WriteLine("PASS: visual persistence/matching, visual blocking, and positive-rejecting clean-baseline recovery");
 
 static LearnedVisualSignature Signature(
     string id,

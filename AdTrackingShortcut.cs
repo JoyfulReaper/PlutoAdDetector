@@ -9,6 +9,14 @@ internal static class AdTrackingShortcut
             if (event.code === 'KeyP') {
               event.preventDefault();
               globalThis.requestAdTrackingToggle();
+            } else if (event.code === 'KeyX') {
+              if (typeof globalThis.requestDetectorReset === 'function') {
+                event.preventDefault();
+                globalThis.requestDetectorReset();
+              } else if (globalThis.top !== globalThis) {
+                event.preventDefault();
+                globalThis.top.postMessage('pluto-ad-detector:force-source-reset', '*');
+              }
             } else if (event.code === 'KeyT') {
               if (typeof globalThis.requestVisualSignatureTraining === 'function') {
                 event.preventDefault();
@@ -29,10 +37,13 @@ internal static class AdTrackingShortcut
             }
           }, true);
           globalThis.addEventListener('message', event => {
-            if (globalThis.top === globalThis &&
-                event.data === 'pluto-ad-detector:train-visual-signature' &&
+            if (globalThis.top !== globalThis) return;
+            if (event.data === 'pluto-ad-detector:train-visual-signature' &&
                 typeof globalThis.requestVisualSignatureTraining === 'function') {
               globalThis.requestVisualSignatureTraining();
+            } else if (event.data === 'pluto-ad-detector:force-source-reset' &&
+                       typeof globalThis.requestDetectorReset === 'function') {
+              globalThis.requestDetectorReset();
             }
           });
         })();

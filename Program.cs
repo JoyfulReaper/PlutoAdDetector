@@ -141,11 +141,16 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     Console.Error.WriteLine($"browser profile: {browserProfileDirectory}");
 
     var trackingToggleRequests = 0;
+    var detectorResetRequests = 0;
     var queueRestoreRequests = 0;
     var visualTrainingRequests = 0;
     await context.ExposeFunctionAsync("requestAdTrackingToggle", () =>
     {
         Interlocked.Increment(ref trackingToggleRequests);
+    });
+    await context.ExposeFunctionAsync("requestDetectorReset", () =>
+    {
+        Interlocked.Increment(ref detectorResetRequests);
     });
     await context.AddInitScriptAsync(script: AdTrackingShortcut.Script);
 
@@ -205,24 +210,56 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     using var feedRefreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     var trackingPaused = false;
     Task<VisualSignatureTrainingResult>? visualTraining = null;
+    CancellationTokenSource? visualTrainingCancellation = null;
+    long visualTrainingGeneration = 0;
     Task<VisualFrameSample?>? visualRuntimeCapture = null;
+    long visualRuntimeCaptureGeneration = 0;
+    long visualGeneration = 0;
     var nextVisualRuntimeSampleAt = DateTimeOffset.UtcNow;
     DetectionBounds? lastVisualRuntimeBounds = null;
     string? loggedVisualRuntimeError = null;
     var visualSamplingDisabled = false;
     LearnedVisualMatch? pendingVisualMatch = null;
     VisualBlockedState? visualBlockedState = null;
+    var recoveryBaseline = new DetectorRecoveryBaseline();
 
     try
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (Interlocked.Exchange(ref detectorResetRequests, 0) > 0)
+            {
+                visualGeneration++;
+                visualTrainingCancellation?.Cancel();
+                Interlocked.Exchange(ref visualTrainingRequests, 0);
+                visualBlockedState = null;
+                pendingVisualMatch = null;
+                publishedState = null;
+                pendingState = null;
+                pendingCount = 0;
+                visualMatcher.ResetProgressions();
+                youtubePlaybackExpected = false;
+                await PauseYoutubeAsync(youtubePage);
+                loggedYoutubeError = null;
+                await sourcePage.BringToFrontAsync();
+                await SetSourceMutedAsync(sourcePage, muted: false);
+                recoveryBaseline.Begin();
+                Console.WriteLine("manual reset: source restored");
+                Console.WriteLine("detector waiting for clean baseline");
+            }
+
             if (visualRuntimeCapture?.IsCompleted is true)
             {
+                var completedCaptureGeneration = visualRuntimeCaptureGeneration;
                 try
                 {
                     var runtimeSample = await visualRuntimeCapture;
-                    if (runtimeSample is null)
+                    if (completedCaptureGeneration != visualGeneration ||
+                        Volatile.Read(ref detectorResetRequests) > 0)
+                    {
+                        // X invalidated this sample while it was in flight.
+                    }
+                    else if (runtimeSample is null)
                     {
                         visualMatcher.ResetProgressions();
                     }
@@ -253,6 +290,12 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                         }
                     }
                 }
+                catch (Exception) when (
+                    completedCaptureGeneration != visualGeneration ||
+                    Volatile.Read(ref detectorResetRequests) > 0)
+                {
+                    // Failures from invalidated work are intentionally ignored.
+                }
                 catch (VisualSamplingUnsupportedException exception)
                 {
                     visualMatcher.ResetProgressions();
@@ -277,10 +320,16 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 
             if (visualTraining?.IsCompleted is true)
             {
+                var completedTrainingGeneration = visualTrainingGeneration;
                 try
                 {
                     var result = await visualTraining;
-                    if (result.Signature is null)
+                    if (completedTrainingGeneration != visualGeneration ||
+                        Volatile.Read(ref detectorResetRequests) > 0)
+                    {
+                        // X invalidated this training result before it could be saved.
+                    }
+                    else if (result.Signature is null)
                     {
                         Console.Error.WriteLine(
                             $"visual training failed: {result.Error ?? "unknown error"} ({result.UsableSamples} usable samples)");
@@ -303,8 +352,16 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                         }
                     }
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (
+                    cancellationToken.IsCancellationRequested ||
+                    visualTrainingCancellation?.IsCancellationRequested is true)
                 {
+                }
+                catch (Exception) when (
+                    completedTrainingGeneration != visualGeneration ||
+                    Volatile.Read(ref detectorResetRequests) > 0)
+                {
+                    // Failures from invalidated work are intentionally ignored.
                 }
                 catch (VisualSamplingUnsupportedException exception)
                 {
@@ -319,6 +376,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 finally
                 {
                     visualTraining = null;
+                    visualTrainingCancellation?.Dispose();
+                    visualTrainingCancellation = null;
                 }
             }
 
@@ -336,13 +395,18 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 {
                     Console.WriteLine(
                         $"visual training started: {VisualSignatureTrainer.TrainingDurationMilliseconds / 1000.0:0.#} seconds at {VisualSignatureTrainer.SampleIntervalMilliseconds} ms intervals");
-                    visualTraining = VisualSignatureTrainer.TrainAsync(sourcePage, cancellationToken);
+                    visualTrainingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    visualTrainingGeneration = visualGeneration;
+                    visualTraining = VisualSignatureTrainer.TrainAsync(
+                        sourcePage,
+                        visualTrainingCancellation.Token);
                 }
             }
 
             if (learnedVisualSignatures.Count > 0 &&
                 !visualSamplingDisabled &&
                 !trackingPaused &&
+                !recoveryBaseline.IsAwaiting &&
                 publishedState is not true &&
                 visualBlockedState is null &&
                 pendingVisualMatch is null &&
@@ -350,6 +414,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 visualRuntimeCapture is null &&
                 DateTimeOffset.UtcNow >= nextVisualRuntimeSampleAt)
             {
+                visualRuntimeCaptureGeneration = visualGeneration;
                 visualRuntimeCapture = VisualFrameSampler.CaptureAsync(sourcePage);
             }
 
@@ -434,7 +499,10 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 }
             }
 
-            if (pendingVisualMatch is not null && Volatile.Read(ref trackingToggleRequests) == 0)
+            if (pendingVisualMatch is not null &&
+                !recoveryBaseline.IsAwaiting &&
+                Volatile.Read(ref trackingToggleRequests) == 0 &&
+                Volatile.Read(ref detectorResetRequests) == 0)
             {
                 var match = pendingVisualMatch;
                 pendingVisualMatch = null;
@@ -509,11 +577,27 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             var sample = await DetectAsync(sourcePage, options.ScanMode);
             // If P was pressed while detection was running, normalize tracking before
             // this sample can trigger a switch. A resumed loop will take a new sample.
-            if (Volatile.Read(ref trackingToggleRequests) > 0)
+            if (Volatile.Read(ref trackingToggleRequests) > 0 ||
+                Volatile.Read(ref detectorResetRequests) > 0)
                 continue;
 
             if (trackingPaused)
             {
+                await Task.Delay(options.PollInterval, cancellationToken);
+                continue;
+            }
+
+            if (recoveryBaseline.IsAwaiting)
+            {
+                visualMatcher.ResetProgressions();
+                if (recoveryBaseline.Observe(sample.IsAd, options.ConfirmationSamples))
+                {
+                    publishedState = null;
+                    pendingState = null;
+                    pendingCount = 0;
+                    Console.WriteLine("detector re-armed");
+                }
+
                 await Task.Delay(options.PollInterval, cancellationToken);
                 continue;
             }
@@ -610,12 +694,19 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             {
                 await visualTraining;
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested ||
+                visualTrainingCancellation?.IsCancellationRequested is true)
             {
             }
             catch (Exception exception)
             {
                 Console.Error.WriteLine($"visual training cleanup failed: {exception.Message}");
+            }
+            finally
+            {
+                visualTrainingCancellation?.Dispose();
+                visualTrainingCancellation = null;
             }
         }
         if (visualRuntimeCapture is not null)

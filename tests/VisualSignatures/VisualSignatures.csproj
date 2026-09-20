@@ -10,5 +10,6 @@
     <Compile Include="../../VisualSignatures.cs" Link="VisualSignatures.cs" />
     <Compile Include="../../VisualSequenceMatcher.cs" Link="VisualSequenceMatcher.cs" />
     <Compile Include="../../VisualBlockedState.cs" Link="VisualBlockedState.cs" />
+    <Compile Include="../../DetectorRecoveryBaseline.cs" Link="DetectorRecoveryBaseline.cs" />
   </ItemGroup>
 </Project>

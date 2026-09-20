@@ -3,15 +3,60 @@ const fs = require('node:fs');
 
 const source = fs.readFileSync('Program.cs', 'utf8');
 
+const resetHandling = source.indexOf('if (Interlocked.Exchange(ref detectorResetRequests, 0) > 0)');
+const runtimeCompletion = source.indexOf('if (visualRuntimeCapture?.IsCompleted is true)');
+assert(resetHandling >= 0 && resetHandling < runtimeCompletion);
+const resetBlock = source.slice(resetHandling, runtimeCompletion);
+for (const required of [
+  'visualGeneration++',
+  'visualTrainingCancellation?.Cancel()',
+  'visualBlockedState = null',
+  'pendingVisualMatch = null',
+  'publishedState = null',
+  'pendingState = null',
+  'pendingCount = 0',
+  'visualMatcher.ResetProgressions()',
+  'youtubePlaybackExpected = false',
+  'PauseYoutubeAsync(youtubePage)',
+  'sourcePage.BringToFrontAsync()',
+  'SetSourceMutedAsync(sourcePage, muted: false)',
+  'recoveryBaseline.Begin()',
+  'manual reset: source restored',
+  'detector waiting for clean baseline'
+]) assert(resetBlock.includes(required), `X reset block missing ${required}`);
+
+const runtimeSection = source.slice(runtimeCompletion, source.indexOf('if (visualTraining?.IsCompleted is true)'));
+assert(runtimeSection.includes('completedCaptureGeneration != visualGeneration'));
+assert(runtimeSection.includes('Volatile.Read(ref detectorResetRequests) > 0'));
+const trainingSection = source.slice(
+  source.indexOf('if (visualTraining?.IsCompleted is true)'),
+  source.indexOf('if (Interlocked.Exchange(ref visualTrainingRequests, 0) > 0)'));
+assert(trainingSection.includes('completedTrainingGeneration != visualGeneration'));
+assert(trainingSection.includes('visualTrainingCancellation?.IsCancellationRequested'));
+
 const captureCompletion = source.indexOf('pendingVisualMatch ??= match;');
 const toggleHandling = source.indexOf('var toggleCount = Interlocked.Exchange(ref trackingToggleRequests, 0);');
-const pendingHandling = source.indexOf('if (pendingVisualMatch is not null && Volatile.Read(ref trackingToggleRequests) == 0)');
+const pendingHandling = source.indexOf('if (pendingVisualMatch is not null &&');
 const domSample = source.indexOf('var sample = await DetectAsync(sourcePage, options.ScanMode);');
 const timeoutHandling = source.indexOf('if (VisualBlockPolicy.ShouldTimeout(');
 assert(captureCompletion >= 0 && captureCompletion < toggleHandling);
 assert(toggleHandling < pendingHandling);
 assert(pendingHandling < domSample);
 assert(domSample < timeoutHandling);
+const pendingSection = source.slice(pendingHandling, source.indexOf('if (Interlocked.Exchange(ref queueRestoreRequests, 0) > 0)'));
+assert(pendingSection.includes('Volatile.Read(ref trackingToggleRequests) == 0'));
+assert(pendingSection.includes('Volatile.Read(ref detectorResetRequests) == 0'));
+
+const recoveryHandling = source.indexOf('if (recoveryBaseline.IsAwaiting)', domSample);
+const ordinaryDomHandling = source.indexOf('everFoundSemanticIndicator |= sample.IsAd;', domSample);
+assert(domSample < recoveryHandling && recoveryHandling < ordinaryDomHandling);
+const postDetectionGuard = source.slice(domSample, recoveryHandling);
+assert(postDetectionGuard.includes('Volatile.Read(ref trackingToggleRequests) > 0'));
+assert(postDetectionGuard.includes('Volatile.Read(ref detectorResetRequests) > 0'));
+const recoveryBlock = source.slice(recoveryHandling, ordinaryDomHandling);
+assert(recoveryBlock.includes('recoveryBaseline.Observe(sample.IsAd, options.ConfirmationSamples)'));
+assert(recoveryBlock.includes('detector re-armed'));
+assert(recoveryBlock.includes('continue;'));
 
 const scheduleStart = source.indexOf('if (learnedVisualSignatures.Count > 0 &&');
 const scheduleEnd = source.indexOf('visualRuntimeCapture = VisualFrameSampler.CaptureAsync(sourcePage);', scheduleStart);
@@ -66,4 +111,4 @@ assert(timeoutBlock.includes('SetSourceMutedAsync(sourcePage, muted: false)'));
 assert(timeoutBlock.includes('pendingState = null'));
 assert(timeoutBlock.includes('pendingCount = 0'));
 
-console.log('PASS: visual event ordering, blocked capture suspension, P cleanup, post-DOM timeout ordering, and seamless handoff guards');
+console.log('PASS: visual block ordering plus X reset, stale-work guards, clean-baseline hold, and seamless handoff');
