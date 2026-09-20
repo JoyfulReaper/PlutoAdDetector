@@ -119,8 +119,16 @@ visible source player's full bounds. Frames are normalized in memory and saved a
 compact 64-bit perceptual fingerprints in `visual-signatures.json`; training does
 not save the screenshots themselves. Only one training session runs at a time.
 
-Learned signatures are persisted for future matching, but they are not yet used
-for ad detection or source switching.
+When signatures exist, the source player is sampled every 500 ms through the
+same full-player crop, 9x8 grayscale normalization, and 64-bit dHash pipeline
+used for training. A report-only match requires four ordered reference anchors;
+reference frames may be skipped to tolerate sampling phase differences. A match
+logs `learned visual match: <name>` but does not affect source/YouTube switching.
+
+Set the `PLUTO_VISUAL_DEBUG` environment variable to `1` for concise near-match
+diagnostics containing the closest reference frame, Hamming distance, threshold,
+progression score, and reset/cooldown reason. Normal output does not include these
+per-sample diagnostics.
 
 ## Keyboard shortcuts
 
@@ -179,8 +187,8 @@ classify ads.
 ## Current limitations
 
 - Pluto can change its DOM at any time; focused and full scans are heuristic.
-- There is no visual ad classifier yet—only DOM/accessibility checks and saved
-  diagnostic crops.
+- Learned visual matching is report-only and does not participate in source/
+  YouTube switching yet. DOM/accessibility detection remains authoritative.
 - YouTube videos can fail because embedding is disabled, the video is unavailable,
   or the IFrame API rejects the playback client. Those errors are logged.
 - Live/upcoming filtering depends on metadata exposed by YouTube's channel page.

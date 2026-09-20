@@ -8,5 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../VisualSignatures.cs" Link="VisualSignatures.cs" />
+    <Compile Include="../../VisualSequenceMatcher.cs" Link="VisualSequenceMatcher.cs" />
   </ItemGroup>
 </Project>

@@ -18,6 +18,9 @@ try
         .ToArray();
     Equal("FFFFFFFFFFFFFFFF", VisualFingerprint.CreateDHash64(descending));
     Equal("0000000000000000", VisualFingerprint.CreateDHash64(ascending));
+    Equal(64, VisualFingerprint.HammingDistance(
+        VisualFingerprint.ParseDHash64("0000000000000000"),
+        VisualFingerprint.ParseDHash64("FFFFFFFFFFFFFFFF")));
 
     var createdAt = new DateTimeOffset(2026, 9, 19, 12, 34, 56, TimeSpan.Zero);
     var first = Signature("11111111-1111-1111-1111-111111111111", " Test signature ", createdAt,
@@ -79,13 +82,68 @@ try
     Equal(false, failedSave.Success);
     Equal(previousContents, File.ReadAllText(path));
     Equal(0, Directory.GetFiles(testDirectory, "*.tmp").Length);
+
+    var referenceFrames = new[]
+    {
+        "0000000000000000",
+        "FFFFFFFF00000000",
+        "AAAAAAAAAAAAAAAA",
+        "5555555555555555",
+        "F0F0F0F0F0F0F0F0",
+        "0F0F0F0F0F0F0F0F",
+        "CCCCCCCC33333333",
+        "33333333CCCCCCCC"
+    };
+    var matchSignature = Signature(
+        "33333333-3333-3333-3333-333333333333",
+        "Ordered promo",
+        createdAt,
+        referenceFrames);
+    var diagnostics = new List<string>();
+    var matcher = new VisualSequenceMatcher([matchSignature], debugEnabled: true, diagnostics.Add);
+    var matchStart = createdAt.AddHours(1);
+    Equal(0, matcher.AddSample(Noisy(referenceFrames[0]), matchStart).Count);
+    Equal(0, matcher.AddSample(Noisy(referenceFrames[2]), matchStart.AddMilliseconds(500)).Count);
+    Equal(0, matcher.AddSample(Noisy(referenceFrames[4]), matchStart.AddMilliseconds(1_000)).Count);
+    var firstMatch = matcher.AddSample(Noisy(referenceFrames[7]), matchStart.AddMilliseconds(1_500));
+    Equal(1, firstMatch.Count);
+    Equal("Ordered promo", firstMatch[0].SignatureName);
+    Equal(true, diagnostics.Any(message =>
+        message.Contains("bestRef=0", StringComparison.Ordinal) &&
+        message.Contains("distance=5", StringComparison.Ordinal) &&
+        message.Contains("threshold=10", StringComparison.Ordinal)));
+
+    // A single similar frame repeated cannot advance through ordered references.
+    var repeatedFrameMatcher = new VisualSequenceMatcher([matchSignature]);
+    for (var index = 0; index < 10; index++)
+        Equal(0, repeatedFrameMatcher.AddSample(referenceFrames[0], matchStart.AddMilliseconds(index * 500)).Count);
+
+    // Reversed anchors must not be mistaken for forward progression.
+    var reverseMatcher = new VisualSequenceMatcher([matchSignature]);
+    foreach (var referenceIndex in new[] { 7, 4, 2, 0 })
+        Equal(0, reverseMatcher.AddSample(referenceFrames[referenceIndex], matchStart).Count);
+
+    // The same continuing occurrence is suppressed. After cooldown plus six
+    // dissimilar frames, the signature is armed for a future occurrence.
+    foreach (var referenceIndex in new[] { 0, 2, 4, 7 })
+        Equal(0, matcher.AddSample(referenceFrames[referenceIndex], matchStart.AddSeconds(2)).Count);
+    const string unrelated = "0123456789ABCDEF";
+    Equal(true, referenceFrames.All(frame => VisualFingerprint.HammingDistance(
+        VisualFingerprint.ParseDHash64(frame), VisualFingerprint.ParseDHash64(unrelated)) >
+        VisualSequenceMatcher.RearmHammingDistance));
+    for (var index = 0; index < VisualSequenceMatcher.RearmDissimilarSamples; index++)
+        Equal(0, matcher.AddSample(unrelated, matchStart.AddSeconds(20).AddMilliseconds(index * 500)).Count);
+    Equal(0, matcher.AddSample(referenceFrames[0], matchStart.AddSeconds(24)).Count);
+    Equal(0, matcher.AddSample(referenceFrames[2], matchStart.AddSeconds(24.5)).Count);
+    Equal(0, matcher.AddSample(referenceFrames[4], matchStart.AddSeconds(25)).Count);
+    Equal(1, matcher.AddSample(referenceFrames[7], matchStart.AddSeconds(25.5)).Count);
 }
 finally
 {
     Directory.Delete(testDirectory, recursive: true);
 }
 
-Console.WriteLine("PASS: versioned visual signatures, per-entry recovery, compact fingerprints, and atomic save behavior");
+Console.WriteLine("PASS: visual persistence, dHash distance, ordered matching, single-frame rejection, and re-arming");
 
 static LearnedVisualSignature Signature(
     string id,
@@ -106,3 +164,6 @@ static void Equal<T>(T expected, T actual)
     if (!EqualityComparer<T>.Default.Equals(expected, actual))
         throw new Exception($"Expected {expected}, got {actual}");
 }
+
+static string Noisy(string fingerprint) =>
+    (VisualFingerprint.ParseDHash64(fingerprint) ^ 0x1FUL).ToString("X16");

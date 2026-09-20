@@ -59,10 +59,20 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var visualSignatureStore = new VisualSignatureStore(visualSignaturePath);
     var visualSignatureLoad = visualSignatureStore.Load();
     var learnedVisualSignatures = visualSignatureLoad.Signatures.ToList();
+    var visualDebugEnabled = string.Equals(
+        Environment.GetEnvironmentVariable("PLUTO_VISUAL_DEBUG"),
+        "1",
+        StringComparison.Ordinal);
+    var visualMatcher = new VisualSequenceMatcher(
+        learnedVisualSignatures,
+        visualDebugEnabled,
+        message => Console.Error.WriteLine(message));
     foreach (var warning in visualSignatureLoad.Warnings)
         Console.Error.WriteLine($"visual signatures: {warning}");
     if (visualSignatureLoad.Signatures.Count > 0)
         Console.Error.WriteLine($"visual signatures loaded: {visualSignatureLoad.Signatures.Count} from {visualSignaturePath}");
+    if (visualDebugEnabled)
+        Console.Error.WriteLine("visual debug diagnostics enabled by PLUTO_VISUAL_DEBUG=1");
 
     var browserProfileDirectory = Path.GetFullPath("browser-profile");
     Directory.CreateDirectory(browserProfileDirectory);
@@ -192,11 +202,60 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     using var feedRefreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     var trackingPaused = false;
     Task<VisualSignatureTrainingResult>? visualTraining = null;
+    Task<VisualFrameSample?>? visualRuntimeCapture = null;
+    var nextVisualRuntimeSampleAt = DateTimeOffset.UtcNow;
+    DetectionBounds? lastVisualRuntimeBounds = null;
+    string? loggedVisualRuntimeError = null;
 
     try
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (visualRuntimeCapture?.IsCompleted is true)
+            {
+                try
+                {
+                    var runtimeSample = await visualRuntimeCapture;
+                    if (runtimeSample is null)
+                    {
+                        visualMatcher.ResetProgressions();
+                    }
+                    else
+                    {
+                        if (lastVisualRuntimeBounds is null)
+                        {
+                            Console.Error.WriteLine(
+                                $"visual runtime matching started: signatures={learnedVisualSignatures.Count} " +
+                                $"player={FormatBounds(runtimeSample.PlayerBounds)} " +
+                                $"normalized={VisualFrameSampler.NormalizedWidth}x{VisualFrameSampler.NormalizedHeight} " +
+                                $"interval={VisualSequenceMatcher.RuntimeSampleIntervalMilliseconds}ms");
+                        }
+                        else if (visualDebugEnabled && lastVisualRuntimeBounds != runtimeSample.PlayerBounds)
+                        {
+                            Console.Error.WriteLine(
+                                $"visual debug: player bounds changed from {FormatBounds(lastVisualRuntimeBounds)} " +
+                                $"to {FormatBounds(runtimeSample.PlayerBounds)}");
+                        }
+
+                        lastVisualRuntimeBounds = runtimeSample.PlayerBounds;
+                        loggedVisualRuntimeError = null;
+                        foreach (var match in visualMatcher.AddSample(runtimeSample.Fingerprint, DateTimeOffset.UtcNow))
+                            Console.WriteLine($"learned visual match: {match.SignatureName}");
+                    }
+                }
+                catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                    visualMatcher.ResetProgressions();
+                    if (loggedVisualRuntimeError != exception.Message)
+                        Console.Error.WriteLine($"visual runtime sample failed: {exception.Message}");
+                    loggedVisualRuntimeError = exception.Message;
+                }
+                finally
+                {
+                    visualRuntimeCapture = null;
+                }
+            }
+
             if (visualTraining?.IsCompleted is true)
             {
                 try
@@ -213,6 +272,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                         var saveResult = visualSignatureStore.Save(learnedVisualSignatures);
                         if (saveResult.Success)
                         {
+                            visualMatcher.ReplaceSignatures(learnedVisualSignatures);
+                            lastVisualRuntimeBounds = null;
                             Console.WriteLine($"visual training completed: {result.UsableSamples} usable samples");
                             Console.WriteLine($"visual signature generated: {result.Signature.Name} [{result.Signature.Id}]");
                         }
@@ -248,6 +309,16 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                         $"visual training started: {VisualSignatureTrainer.TrainingDurationMilliseconds / 1000.0:0.#} seconds at {VisualSignatureTrainer.SampleIntervalMilliseconds} ms intervals");
                     visualTraining = VisualSignatureTrainer.TrainAsync(sourcePage, cancellationToken);
                 }
+            }
+
+            if (learnedVisualSignatures.Count > 0 &&
+                visualTraining is null &&
+                visualRuntimeCapture is null &&
+                DateTimeOffset.UtcNow >= nextVisualRuntimeSampleAt)
+            {
+                nextVisualRuntimeSampleAt = DateTimeOffset.UtcNow.AddMilliseconds(
+                    VisualSequenceMatcher.RuntimeSampleIntervalMilliseconds);
+                visualRuntimeCapture = VisualFrameSampler.CaptureAsync(sourcePage);
             }
 
             if (feedRefresh?.IsCompleted is true)
@@ -459,6 +530,17 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 Console.Error.WriteLine($"visual training cleanup failed: {exception.Message}");
             }
         }
+        if (visualRuntimeCapture is not null)
+        {
+            try
+            {
+                await visualRuntimeCapture;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"visual runtime cleanup failed: {exception.Message}");
+            }
+        }
         if (feedRefresh is not null)
         {
             try
@@ -493,6 +575,9 @@ static async Task<YoutubeQueueRefreshStatus> GetYoutubeQueueRefreshStatusAsync(I
     return JsonSerializer.Deserialize<YoutubeQueueRefreshStatus>(json, JsonOptions.Instance)
         ?? throw new InvalidOperationException("Local YouTube queue returned no refresh status.");
 }
+
+static string FormatBounds(DetectionBounds bounds) =>
+    $"({bounds.X:0.#},{bounds.Y:0.#}) {bounds.Width:0.#}x{bounds.Height:0.#}";
 
 static async Task<YoutubeControlResult> ApplyYoutubeQueueRestoreAsync(
     IPage page,

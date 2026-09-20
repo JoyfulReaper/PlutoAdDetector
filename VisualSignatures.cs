@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Globalization;
+using System.Numerics;
 
 internal sealed record LearnedVisualSignature(
     string Id,
@@ -48,6 +49,12 @@ internal static class VisualFingerprint
 
         return fingerprint.ToString("X16", CultureInfo.InvariantCulture);
     }
+
+    internal static ulong ParseDHash64(string fingerprint) =>
+        ulong.Parse(fingerprint, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+
+    internal static int HammingDistance(ulong left, ulong right) =>
+        BitOperations.PopCount(left ^ right);
 }
 
 internal sealed class VisualSignatureStore
