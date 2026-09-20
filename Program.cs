@@ -239,15 +239,16 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             if (Interlocked.Exchange(ref detectorResetRequests, 0) > 0)
             {
                 visualGeneration++;
-                visualRuntimeGeneration++;
                 visualTrainingCancellation?.Cancel();
                 Interlocked.Exchange(ref visualTrainingRequests, 0);
                 visualBlockedState = null;
-                pendingVisualMatch = null;
                 publishedState = null;
                 pendingState = null;
                 pendingCount = 0;
-                visualMatcher.ResetProgressions();
+                VisualRuntimeState.ResetBoundary(
+                    visualMatcher,
+                    ref visualRuntimeGeneration,
+                    ref pendingVisualMatch);
                 youtubePlaybackExpected = false;
                 await PauseYoutubeAsync(youtubePage);
                 loggedYoutubeError = null;
@@ -262,9 +263,10 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             while (visualToggleCount-- > 0)
             {
                 visualMatchingEnabled = !visualMatchingEnabled;
-                visualRuntimeGeneration++;
-                visualMatcher.ResetProgressions();
-                pendingVisualMatch = null;
+                VisualRuntimeState.ResetBoundary(
+                    visualMatcher,
+                    ref visualRuntimeGeneration,
+                    ref pendingVisualMatch);
                 Console.WriteLine(visualMatchingEnabled
                     ? "visual matching enabled"
                     : "visual matching disabled");
@@ -276,7 +278,9 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 try
                 {
                     var runtimeSample = await visualRuntimeCapture;
-                    if (completedCaptureGeneration != visualRuntimeGeneration ||
+                    if (!VisualRuntimeState.IsCaptureCurrent(
+                            completedCaptureGeneration,
+                            visualRuntimeGeneration) ||
                         Volatile.Read(ref detectorResetRequests) > 0 ||
                         Volatile.Read(ref visualMatchingToggleRequests) > 0)
                     {
@@ -314,7 +318,9 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                     }
                 }
                 catch (Exception) when (
-                    completedCaptureGeneration != visualRuntimeGeneration ||
+                    !VisualRuntimeState.IsCaptureCurrent(
+                        completedCaptureGeneration,
+                        visualRuntimeGeneration) ||
                     Volatile.Read(ref detectorResetRequests) > 0 ||
                     Volatile.Read(ref visualMatchingToggleRequests) > 0)
                 {
@@ -505,12 +511,14 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 publishedState = null;
                 pendingState = null;
                 pendingCount = 0;
-                visualMatcher.ResetProgressions();
+                VisualRuntimeState.ResetBoundary(
+                    visualMatcher,
+                    ref visualRuntimeGeneration,
+                    ref pendingVisualMatch);
 
                 if (trackingPaused)
                 {
                     visualBlockedState = null;
-                    pendingVisualMatch = null;
                     youtubePlaybackExpected = false;
                     await PauseYoutubeAsync(youtubePage);
                     loggedYoutubeError = null;
@@ -646,6 +654,10 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 // A non-ad page load is baseline state, not an "ad ended" transition.
                 if (sample.IsAd)
                 {
+                    VisualRuntimeState.ResetBoundary(
+                        visualMatcher,
+                        ref visualRuntimeGeneration,
+                        ref pendingVisualMatch);
                     var requiresDomStartSwitch = VisualBlockPolicy.RequiresSwitchForDomStart(visualBlockedState);
                     visualBlockedState = null;
                     if (requiresDomStartSwitch)
@@ -662,6 +674,10 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 }
                 else if (publishedState is true)
                 {
+                    VisualRuntimeState.ResetBoundary(
+                        visualMatcher,
+                        ref visualRuntimeGeneration,
+                        ref pendingVisualMatch);
                     youtubePlaybackExpected = false;
                     await PauseYoutubeAsync(youtubePage);
                     loggedYoutubeError = null;

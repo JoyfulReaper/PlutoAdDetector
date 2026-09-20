@@ -204,6 +204,60 @@ try
     Equal(0, matcher.AddSample(referenceFrames[4], matchStart.AddSeconds(25)).Count);
     Equal(1, matcher.AddSample(referenceFrames[7], matchStart.AddSeconds(25.5)).Count);
 
+    // A P transition invalidates a capture already in flight and clears any
+    // pending event. Resuming advances the generation again, so the old sample
+    // cannot become current after tracking is enabled.
+    var boundaryMatcher = new VisualSequenceMatcher([matchSignature]);
+    long runtimeGeneration = 0;
+    var captureBeforePause = runtimeGeneration;
+    LearnedVisualMatch? pendingRuntimeMatch = new(matchSignature.Id, matchSignature.Name);
+    VisualRuntimeState.ResetBoundary(
+        boundaryMatcher,
+        ref runtimeGeneration,
+        ref pendingRuntimeMatch);
+    Equal(false, VisualRuntimeState.IsCaptureCurrent(captureBeforePause, runtimeGeneration));
+    Equal<LearnedVisualMatch?>(null, pendingRuntimeMatch);
+
+    var generationWhilePaused = runtimeGeneration;
+    pendingRuntimeMatch = new(matchSignature.Id, matchSignature.Name);
+    VisualRuntimeState.ResetBoundary(
+        boundaryMatcher,
+        ref runtimeGeneration,
+        ref pendingRuntimeMatch);
+    Equal(false, VisualRuntimeState.IsCaptureCurrent(generationWhilePaused, runtimeGeneration));
+    Equal<LearnedVisualMatch?>(null, pendingRuntimeMatch);
+
+    // Partial evidence cannot cross a confirmed DOM-ad boundary. An in-flight
+    // capture is stale after the boundary, and the final pre-ad anchor cannot
+    // complete the old progression after normal content returns.
+    Equal(0, boundaryMatcher.AddSample(referenceFrames[0], matchStart.AddMinutes(1)).Count);
+    Equal(0, boundaryMatcher.AddSample(referenceFrames[2], matchStart.AddMinutes(1).AddMilliseconds(500)).Count);
+    Equal(0, boundaryMatcher.AddSample(referenceFrames[4], matchStart.AddMinutes(1).AddMilliseconds(1_000)).Count);
+    var captureBeforeDomAd = runtimeGeneration;
+    VisualRuntimeState.ResetBoundary(
+        boundaryMatcher,
+        ref runtimeGeneration,
+        ref pendingRuntimeMatch);
+    Equal(false, VisualRuntimeState.IsCaptureCurrent(captureBeforeDomAd, runtimeGeneration));
+
+    VisualRuntimeState.ResetBoundary(
+        boundaryMatcher,
+        ref runtimeGeneration,
+        ref pendingRuntimeMatch);
+    Equal(0, boundaryMatcher.AddSample(
+        referenceFrames[7],
+        matchStart.AddMinutes(2)).Count);
+
+    // Once fresh sampling resumes, a complete new sequence still matches.
+    VisualRuntimeState.ResetBoundary(
+        boundaryMatcher,
+        ref runtimeGeneration,
+        ref pendingRuntimeMatch);
+    Equal(0, boundaryMatcher.AddSample(referenceFrames[0], matchStart.AddMinutes(3)).Count);
+    Equal(0, boundaryMatcher.AddSample(referenceFrames[2], matchStart.AddMinutes(3).AddMilliseconds(500)).Count);
+    Equal(0, boundaryMatcher.AddSample(referenceFrames[4], matchStart.AddMinutes(3).AddMilliseconds(1_000)).Count);
+    Equal(1, boundaryMatcher.AddSample(referenceFrames[7], matchStart.AddMinutes(3).AddMilliseconds(1_500)).Count);
+
     var visualMatch = new LearnedVisualMatch(matchSignature.Id, matchSignature.Name);
     var visualStartAt = createdAt.AddHours(2);
     var visualStart = VisualBlockPolicy.TryStart(

@@ -11,5 +11,6 @@
     <Compile Include="../../VisualSequenceMatcher.cs" Link="VisualSequenceMatcher.cs" />
     <Compile Include="../../VisualBlockedState.cs" Link="VisualBlockedState.cs" />
     <Compile Include="../../DetectorRecoveryBaseline.cs" Link="DetectorRecoveryBaseline.cs" />
+    <Compile Include="../../VisualRuntimeState.cs" Link="VisualRuntimeState.cs" />
   </ItemGroup>
 </Project>
