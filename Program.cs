@@ -210,6 +210,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     DetectionBounds? lastVisualRuntimeBounds = null;
     string? loggedVisualRuntimeError = null;
     var visualSamplingDisabled = false;
+    LearnedVisualMatch? pendingVisualMatch = null;
+    VisualBlockedState? visualBlockedState = null;
 
     try
     {
@@ -245,7 +247,10 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                         lastVisualRuntimeBounds = runtimeSample.PlayerBounds;
                         loggedVisualRuntimeError = null;
                         foreach (var match in visualMatcher.AddSample(runtimeSample.Fingerprint, DateTimeOffset.UtcNow))
+                        {
                             Console.WriteLine($"learned visual match: {match.SignatureName}");
+                            pendingVisualMatch ??= match;
+                        }
                     }
                 }
                 catch (VisualSamplingUnsupportedException exception)
@@ -337,6 +342,10 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 
             if (learnedVisualSignatures.Count > 0 &&
                 !visualSamplingDisabled &&
+                !trackingPaused &&
+                publishedState is not true &&
+                visualBlockedState is null &&
+                pendingVisualMatch is null &&
                 visualTraining is null &&
                 visualRuntimeCapture is null &&
                 DateTimeOffset.UtcNow >= nextVisualRuntimeSampleAt)
@@ -406,9 +415,12 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 publishedState = null;
                 pendingState = null;
                 pendingCount = 0;
+                visualMatcher.ResetProgressions();
 
                 if (trackingPaused)
                 {
+                    visualBlockedState = null;
+                    pendingVisualMatch = null;
                     youtubePlaybackExpected = false;
                     await PauseYoutubeAsync(youtubePage);
                     loggedYoutubeError = null;
@@ -419,6 +431,29 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 else
                 {
                     Console.WriteLine("ad tracking resumed");
+                }
+            }
+
+            if (pendingVisualMatch is not null && Volatile.Read(ref trackingToggleRequests) == 0)
+            {
+                var match = pendingVisualMatch;
+                pendingVisualMatch = null;
+                var start = VisualBlockPolicy.TryStart(
+                    visualBlockedState,
+                    match,
+                    DateTimeOffset.UtcNow,
+                    trackingPaused,
+                    publishedState is true);
+                if (start.Started)
+                {
+                    visualBlockedState = start.State;
+                    await SetSourceMutedAsync(sourcePage, muted: true);
+                    await youtubePage.BringToFrontAsync();
+                    youtubePlaybackExpected = true;
+                    await ResumeYoutubeAsync(youtubePage);
+                    loggedYoutubeError = null;
+                    nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow;
+                    Console.WriteLine($"blocked segment started [VISUAL:{match.SignatureName}]");
                 }
             }
 
@@ -500,12 +535,17 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 // A non-ad page load is baseline state, not an "ad ended" transition.
                 if (sample.IsAd)
                 {
-                    await SetSourceMutedAsync(sourcePage, muted: true);
-                    await youtubePage.BringToFrontAsync();
-                    youtubePlaybackExpected = true;
-                    await ResumeYoutubeAsync(youtubePage);
-                    loggedYoutubeError = null;
-                    nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow;
+                    var requiresDomStartSwitch = VisualBlockPolicy.RequiresSwitchForDomStart(visualBlockedState);
+                    visualBlockedState = null;
+                    if (requiresDomStartSwitch)
+                    {
+                        await SetSourceMutedAsync(sourcePage, muted: true);
+                        await youtubePage.BringToFrontAsync();
+                        youtubePlaybackExpected = true;
+                        await ResumeYoutubeAsync(youtubePage);
+                        loggedYoutubeError = null;
+                        nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow;
+                    }
                     Console.WriteLine($"ad started [{sample.Method}]");
                     publishedState = true;
                 }
@@ -519,6 +559,22 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                     Console.WriteLine($"ad ended [{sample.Method}]");
                     publishedState = false;
                 }
+            }
+
+            if (VisualBlockPolicy.ShouldTimeout(
+                visualBlockedState,
+                publishedState is true,
+                DateTimeOffset.UtcNow))
+            {
+                visualBlockedState = null;
+                youtubePlaybackExpected = false;
+                await PauseYoutubeAsync(youtubePage);
+                loggedYoutubeError = null;
+                await sourcePage.BringToFrontAsync();
+                await SetSourceMutedAsync(sourcePage, muted: false);
+                pendingState = null;
+                pendingCount = 0;
+                Console.WriteLine("blocked segment ended [VISUAL:timeout]");
             }
 
             if (!everFoundSemanticIndicator &&

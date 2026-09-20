@@ -13,6 +13,8 @@ changes look like:
 ```text
 ad started [DOM]
 ad ended [DOM]
+blocked segment started [VISUAL:<signature name>]
+blocked segment ended [VISUAL:timeout]
 ad tracking paused
 ad tracking resumed
 ```
@@ -130,8 +132,11 @@ within the most recent 16 runtime samples, spanning at least three reference
 positions and containing at least three independently different frame hashes.
 Reference frames may be skipped, and up to two isolated runtime samples may miss,
 to tolerate sampling phase differences and cuts. The per-frame Hamming threshold
-is 10. A match logs `learned visual match: <name>` but does not affect
-source/YouTube switching.
+is 10. A confirmed match mutes the source, brings YouTube forward, and starts a
+30-second grace period for Pluto's normal DOM ad indicator. A DOM ad that appears
+during that period takes over seamlessly without repeating the mute/tab/play
+operations. If no DOM ad is confirmed, the timeout pauses YouTube and restores
+the source.
 
 Set the `PLUTO_VISUAL_DEBUG` environment variable to `1` for concise near-match
 diagnostics containing the global and expected-forward closest reference frames,
@@ -201,8 +206,9 @@ classify ads.
 ## Current limitations
 
 - Pluto can change its DOM at any time; focused and full scans are heuristic.
-- Learned visual matching is report-only and does not participate in source/
-  YouTube switching yet. DOM/accessibility detection remains authoritative.
+- Learned visual matching recognizes only trained recurring sequences and can
+  false-positive or miss changed content. DOM/accessibility detection remains
+  authoritative when a normal Pluto ad indicator appears.
 - YouTube videos can fail because embedding is disabled, the video is unavailable,
   or the IFrame API rejects the playback client. Those errors are logged.
 - Live/upcoming filtering depends on metadata exposed by YouTube's channel page.

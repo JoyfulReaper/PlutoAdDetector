@@ -203,13 +203,55 @@ try
     Equal(0, matcher.AddSample(referenceFrames[2], matchStart.AddSeconds(24.5)).Count);
     Equal(0, matcher.AddSample(referenceFrames[4], matchStart.AddSeconds(25)).Count);
     Equal(1, matcher.AddSample(referenceFrames[7], matchStart.AddSeconds(25.5)).Count);
+
+    var visualMatch = new LearnedVisualMatch(matchSignature.Id, matchSignature.Name);
+    var visualStartAt = createdAt.AddHours(2);
+    var visualStart = VisualBlockPolicy.TryStart(
+        null,
+        visualMatch,
+        visualStartAt,
+        trackingPaused: false,
+        domAdConfirmed: false);
+    Equal(true, visualStart.Started);
+    Equal(visualStartAt, visualStart.State?.StartedAt);
+    Equal(visualStartAt.AddSeconds(30), visualStart.State?.Deadline);
+
+    // Additional matches while blocked do not replace the state or extend its deadline.
+    var repeatedVisualStart = VisualBlockPolicy.TryStart(
+        visualStart.State,
+        new LearnedVisualMatch("66666666-6666-6666-6666-666666666666", "Another match"),
+        visualStartAt.AddSeconds(20),
+        trackingPaused: false,
+        domAdConfirmed: false);
+    Equal(false, repeatedVisualStart.Started);
+    Equal(visualStart.State, repeatedVisualStart.State);
+    Equal(visualStartAt.AddSeconds(30), repeatedVisualStart.State?.Deadline);
+
+    // DOM-confirmed and tracking-paused states reject a visual transition.
+    Equal(false, VisualBlockPolicy.TryStart(
+        null, visualMatch, visualStartAt, trackingPaused: false, domAdConfirmed: true).Started);
+    Equal(false, VisualBlockPolicy.TryStart(
+        null, visualMatch, visualStartAt, trackingPaused: true, domAdConfirmed: false).Started);
+
+    Equal(false, VisualBlockPolicy.ShouldTimeout(
+        visualStart.State, domAdConfirmed: false, visualStartAt.AddSeconds(29.999)));
+    Equal(true, VisualBlockPolicy.ShouldTimeout(
+        visualStart.State, domAdConfirmed: false, visualStartAt.AddSeconds(30)));
+
+    // A confirmed DOM sample at the deadline is handled first. It needs no
+    // duplicate switch, and clearing the visual state prevents timeout restore.
+    Equal(false, VisualBlockPolicy.RequiresSwitchForDomStart(visualStart.State));
+    VisualBlockedState? stateAfterDomHandoff = null;
+    Equal(false, VisualBlockPolicy.ShouldTimeout(
+        stateAfterDomHandoff, domAdConfirmed: true, visualStartAt.AddSeconds(30)));
+    Equal(true, VisualBlockPolicy.RequiresSwitchForDomStart(null));
 }
 finally
 {
     Directory.Delete(testDirectory, recursive: true);
 }
 
-Console.WriteLine("PASS: visual persistence, dHash distance, tolerant ordered alignment, ambiguity/miss handling, anti-spam, and re-arming");
+Console.WriteLine("PASS: visual persistence/matching plus visual block start, timeout, pause/DOM rejection, and seamless DOM handoff policy");
 
 static LearnedVisualSignature Signature(
     string id,

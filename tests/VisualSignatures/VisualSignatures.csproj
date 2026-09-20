@@ -9,5 +9,6 @@
   <ItemGroup>
     <Compile Include="../../VisualSignatures.cs" Link="VisualSignatures.cs" />
     <Compile Include="../../VisualSequenceMatcher.cs" Link="VisualSequenceMatcher.cs" />
+    <Compile Include="../../VisualBlockedState.cs" Link="VisualBlockedState.cs" />
   </ItemGroup>
 </Project>
