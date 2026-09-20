@@ -7,6 +7,7 @@ const candidates = [item('short', 10), { ...item('live', 9), automaticSkipReason
 const hostSource = fs.readFileSync('LocalYoutubePlayerHost.cs', 'utf8');
 assert(hostSource.includes('T = teach source visual (source tab)'));
 assert(hostSource.includes('X = force source / reset detector'));
+assert(hostSource.includes('V = toggle automatic visual matching'));
 const script = hostSource.match(/<script>([\s\S]*?)<\/script>/)[1]
   .replace('{{candidatesJson}}', JSON.stringify(candidates)).replace('{{minimumDurationSeconds}}', '300')
   .replace('{{JsonSerializer.Serialize(singleVideoId)}}', 'null')
@@ -17,12 +18,13 @@ const keyListeners = [];
 const messageListeners = [];
 let restoreRequests = 0;
 let resetRequests = 0;
+let visualToggleRequests = 0;
 const helpChanges = [];
 const helpOverlay = {
   classList: { add: value => helpChanges.push(`add:${value}`), remove: value => helpChanges.push(`remove:${value}`) },
   setAttribute: (name, value) => helpChanges.push(`${name}:${value}`)
 };
-const context = { window: { location: { origin: 'http://127.0.0.1:1234' }, requestYoutubeQueueRestore: () => { restoreRequests++; }, requestDetectorReset: () => { resetRequests++; }, addEventListener: (type, listener) => { if (type === 'keydown') keyListeners.push(listener); if (type === 'message') messageListeners.push(listener); } },
+const context = { window: { location: { origin: 'http://127.0.0.1:1234' }, requestYoutubeQueueRestore: () => { restoreRequests++; }, requestDetectorReset: () => { resetRequests++; }, requestVisualMatchingToggle: () => { visualToggleRequests++; }, addEventListener: (type, listener) => { if (type === 'keydown') keyListeners.push(listener); if (type === 'message') messageListeners.push(listener); } },
   document: { getElementById: id => id === 'keyboard-help' ? helpOverlay : null },
   console: { log: value => logs.push(value) }, setTimeout: callback => setImmediate(callback), clearTimeout: () => {},
   YT: { PlayerState: { ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3 }, Player: class {
@@ -114,6 +116,10 @@ async function test() {
     preventDefault() {} });
   messageListeners[0]({ data: 'pluto-ad-detector:force-source-reset' });
   assert.equal(resetRequests, 2);
+  keyListeners[0]({ code: 'KeyV', key: 'v', defaultPrevented: false, repeat: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {} });
+  messageListeners[0]({ data: 'pluto-ad-detector:toggle-visual-matching' });
+  assert.equal(visualToggleRequests, 2);
   players.player.position = 17.5;
   const saved = controls.getQueueState();
   assert.deepEqual(JSON.parse(JSON.stringify(saved.currentVideo)), {
@@ -208,7 +214,7 @@ async function test() {
   assert.equal(controls.skip().success, true);
   assert.equal(controls.getQueue().currentId, null);
   assert.equal(players.player.playing, false);
-  console.log('PASS: queue behavior, playback intent/failure, stale-refresh discard, N/R/X shortcuts, H/? help overlay, and restore position/order');
+  console.log('PASS: queue behavior, playback intent/failure, stale-refresh discard, N/R/V/X shortcuts, H/? help overlay, and restore position/order');
   delete players.probe;
   const singleKeys = [];
   const singleContext = { ...context, window: { location: context.window.location,

@@ -52,6 +52,9 @@ dotnet run -- --url "https://example.com/stream"
 
 # Debug with the original whole-document detector
 dotnet run -- --scan-mode full
+
+# Start with automatic learned visual sampling disabled
+dotnet run -- --no-visual
 ```
 
 ## YouTube modes
@@ -144,6 +147,12 @@ Hamming distances, threshold, progression/miss counts, and the reason alignment
 advanced, stalled, restarted, or reset. Normal output does not include these
 per-sample diagnostics.
 
+Press `V` to toggle automatic runtime visual sampling for the current run, or use
+`--no-visual` to start with it disabled. DOM ad detection continues normally,
+and `T` training remains available because it is an explicit action. Disabling
+automatic matching does not delete learned signatures or interrupt an already
+active visual block; that block still ends through DOM handoff or its timeout.
+
 Signatures created by the earlier screenshot-based fingerprint pipeline are
 version-incompatible and must be retrained. If browser security, cross-origin
 media, or DRM prevents canvas pixel access, learned visual sampling logs one error
@@ -157,13 +166,15 @@ and disables itself for that run; it does not fall back to continuous screenshot
 | `P` | Toggle ad tracking. Pausing also pauses YouTube, foregrounds/unmutes the source, and suppresses switching while the detector loop stays alive. Resuming clears debounce state and samples fresh. |
 | `R` | Reload `youtube-queue.json` in automatic mode. Allowed only while tracking is paused or YouTube is foregrounded. The restored video keeps the player's current playing/paused state. |
 | `T` | Teach a visual signature from a short sequence of the source player's full bounds. Available while the source tab has focus. |
+| `V` | Toggle automatic learned visual sampling and matching. DOM detection and explicit `T` training remain available. |
 | `X` | Force the source back immediately and reset detector state. Detection resumes only after the configured number of consecutive clean DOM samples. |
 | `H` or `?` | Briefly show keyboard help over the local YouTube page. |
 
-`N`, `R`, `X`, and help work from the local player page, including when focus is
-inside the YouTube iframe. `P` and `X` work from either browser tab, while `T` is
-source-tab specific. `P` pauses or resumes tracking; `X` keeps tracking enabled
-but immediately restores the source and waits for a clean detector baseline.
+`N`, `R`, `V`, `X`, and help work from the local player page, including when
+focus is inside the YouTube iframe. `P`, `V`, and `X` work from either browser
+tab, while `T` is source-tab specific. `P` pauses or resumes all tracking; `V`
+controls only automatic learned visual matching; `X` keeps tracking enabled but
+immediately restores the source and waits for a clean detector baseline.
 Queue refreshes continue while ad tracking is paused; pausing or resetting the
 detector does not clear or reorder the queue.
 
@@ -199,6 +210,7 @@ classify ads.
 | `--youtube-url <url>` | Single-video override; mutually exclusive with an explicitly supplied `--channel-url`. |
 | `--min-duration-seconds <n>` | Automatic queue minimum. Default: `300`. |
 | `--resume` | Restore a compatible automatic queue from `youtube-queue.json`. |
+| `--no-visual` | Start with automatic learned visual sampling disabled. Press `V` to enable it for the current run. |
 | `--scan-mode focused\|full` | DOM scan scope. Default: `focused`. |
 | `--poll-ms <n>` | Detector polling interval. Default: `500`. |
 | `--confirm <n>` | Consecutive samples required for a transition. Default: `2`. |
@@ -212,6 +224,9 @@ classify ads.
 - Learned visual matching recognizes only trained recurring sequences and can
   false-positive or miss changed content. DOM/accessibility detection remains
   authoritative when a normal Pluto ad indicator appears.
+- Automatic visual sampling can cause occasional display disturbance on some
+  browser/GPU/video combinations. `V` or `--no-visual` disables that sampling
+  without disabling DOM detection.
 - YouTube videos can fail because embedding is disabled, the video is unavailable,
   or the IFrame API rejects the playback client. Those errors are logged.
 - Live/upcoming filtering depends on metadata exposed by YouTube's channel page.

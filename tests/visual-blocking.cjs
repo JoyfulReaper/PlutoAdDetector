@@ -26,8 +26,9 @@ for (const required of [
 ]) assert(resetBlock.includes(required), `X reset block missing ${required}`);
 
 const runtimeSection = source.slice(runtimeCompletion, source.indexOf('if (visualTraining?.IsCompleted is true)'));
-assert(runtimeSection.includes('completedCaptureGeneration != visualGeneration'));
+assert(runtimeSection.includes('completedCaptureGeneration != visualRuntimeGeneration'));
 assert(runtimeSection.includes('Volatile.Read(ref detectorResetRequests) > 0'));
+assert(runtimeSection.includes('Volatile.Read(ref visualMatchingToggleRequests) > 0'));
 const trainingSection = source.slice(
   source.indexOf('if (visualTraining?.IsCompleted is true)'),
   source.indexOf('if (Interlocked.Exchange(ref visualTrainingRequests, 0) > 0)'));
@@ -46,6 +47,21 @@ assert(domSample < timeoutHandling);
 const pendingSection = source.slice(pendingHandling, source.indexOf('if (Interlocked.Exchange(ref queueRestoreRequests, 0) > 0)'));
 assert(pendingSection.includes('Volatile.Read(ref trackingToggleRequests) == 0'));
 assert(pendingSection.includes('Volatile.Read(ref detectorResetRequests) == 0'));
+assert(pendingSection.includes('Volatile.Read(ref visualMatchingToggleRequests) == 0'));
+
+const visualToggleStart = source.indexOf('var visualToggleCount = Interlocked.Exchange(ref visualMatchingToggleRequests, 0);');
+const visualToggleEnd = source.indexOf('if (visualRuntimeCapture?.IsCompleted is true)', visualToggleStart);
+const visualToggle = source.slice(visualToggleStart, visualToggleEnd);
+assert(visualToggle.includes('visualMatchingEnabled = !visualMatchingEnabled'));
+assert(visualToggle.includes('visualRuntimeGeneration++'));
+assert(visualToggle.includes('visualMatcher.ResetProgressions()'));
+assert(visualToggle.includes('pendingVisualMatch = null'));
+assert(!visualToggle.includes('visualBlockedState = null'));
+assert(!visualToggle.includes('learnedVisualSignatures.Clear'));
+assert(!visualToggle.includes('PauseYoutubeAsync'));
+assert(!visualToggle.includes('BringToFrontAsync'));
+assert(!visualToggle.includes('SetSourceMutedAsync'));
+assert(source.includes('var visualMatchingEnabled = !options.NoVisual;'));
 
 const recoveryHandling = source.indexOf('if (recoveryBaseline.IsAwaiting)', domSample);
 const ordinaryDomHandling = source.indexOf('everFoundSemanticIndicator |= sample.IsAd;', domSample);
@@ -62,8 +78,14 @@ const scheduleStart = source.indexOf('if (learnedVisualSignatures.Count > 0 &&')
 const scheduleEnd = source.indexOf('visualRuntimeCapture = VisualFrameSampler.CaptureAsync(sourcePage);', scheduleStart);
 const schedule = source.slice(scheduleStart, scheduleEnd);
 assert(schedule.includes('publishedState is not true'));
+assert(schedule.includes('visualMatchingEnabled'));
 assert(schedule.includes('visualBlockedState is null'));
 assert(schedule.includes('pendingVisualMatch is null'));
+
+const trainingRequestStart = source.indexOf('if (Interlocked.Exchange(ref visualTrainingRequests, 0) > 0)');
+const trainingRequestEnd = source.indexOf('if (learnedVisualSignatures.Count > 0 &&', trainingRequestStart);
+const trainingRequest = source.slice(trainingRequestStart, trainingRequestEnd);
+assert(!trainingRequest.includes('visualMatchingEnabled'));
 
 const pauseStart = source.indexOf('if (trackingPaused)');
 const pauseEnd = source.indexOf('Console.WriteLine("ad tracking paused");', pauseStart);

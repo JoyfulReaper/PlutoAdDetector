@@ -17,6 +17,14 @@ internal static class AdTrackingShortcut
                 event.preventDefault();
                 globalThis.top.postMessage('pluto-ad-detector:force-source-reset', '*');
               }
+            } else if (event.code === 'KeyV') {
+              if (typeof globalThis.requestVisualMatchingToggle === 'function') {
+                event.preventDefault();
+                globalThis.requestVisualMatchingToggle();
+              } else if (globalThis.top !== globalThis) {
+                event.preventDefault();
+                globalThis.top.postMessage('pluto-ad-detector:toggle-visual-matching', '*');
+              }
             } else if (event.code === 'KeyT') {
               if (typeof globalThis.requestVisualSignatureTraining === 'function') {
                 event.preventDefault();
@@ -44,6 +52,9 @@ internal static class AdTrackingShortcut
             } else if (event.data === 'pluto-ad-detector:force-source-reset' &&
                        typeof globalThis.requestDetectorReset === 'function') {
               globalThis.requestDetectorReset();
+            } else if (event.data === 'pluto-ad-detector:toggle-visual-matching' &&
+                       typeof globalThis.requestVisualMatchingToggle === 'function') {
+              globalThis.requestVisualMatchingToggle();
             }
           });
         })();

@@ -18,6 +18,7 @@ internal sealed record DetectorOptions(
     TimeSpan CaptureInterval,
     PlutoScanMode ScanMode,
     bool Resume,
+    bool NoVisual,
     bool ShowHelp)
 {
     private const string DefaultSourceUrl = "https://pluto.tv/live-tv";
@@ -33,6 +34,7 @@ internal sealed record DetectorOptions(
           --confirm <count>          Consecutive samples required for a transition (default: 2)
           --scan-mode focused|full  DOM scan scope (default: focused; full scans the visible viewport)
           --resume                   Restore automatic queue state from youtube-queue.json
+          --no-visual                Start with automatic learned visual matching disabled
           --captures <directory>     Visual fallback directory (default: captures)
           --capture-seconds <count>  Seconds between fallback crops (default: 30)
           --help                     Show this help on standard error
@@ -52,6 +54,7 @@ internal sealed record DetectorOptions(
         var captureSeconds = 30;
         var scanMode = PlutoScanMode.Focused;
         var resume = false;
+        var noVisual = false;
         var showHelp = false;
 
         for (var index = 0; index < args.Length; index++)
@@ -99,6 +102,9 @@ internal sealed record DetectorOptions(
                 case "--resume":
                     resume = true;
                     break;
+                case "--no-visual":
+                    noVisual = true;
+                    break;
                 case "--captures":
                     captureDirectory = Path.GetFullPath(NextValue("--captures"));
                     break;
@@ -135,6 +141,7 @@ internal sealed record DetectorOptions(
             TimeSpan.FromSeconds(captureSeconds),
             scanMode,
             resume,
+            noVisual,
             showHelp);
     }
 

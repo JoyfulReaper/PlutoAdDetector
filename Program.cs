@@ -142,6 +142,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 
     var trackingToggleRequests = 0;
     var detectorResetRequests = 0;
+    var visualMatchingToggleRequests = 0;
     var queueRestoreRequests = 0;
     var visualTrainingRequests = 0;
     await context.ExposeFunctionAsync("requestAdTrackingToggle", () =>
@@ -151,6 +152,10 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     await context.ExposeFunctionAsync("requestDetectorReset", () =>
     {
         Interlocked.Increment(ref detectorResetRequests);
+    });
+    await context.ExposeFunctionAsync("requestVisualMatchingToggle", () =>
+    {
+        Interlocked.Increment(ref visualMatchingToggleRequests);
     });
     await context.AddInitScriptAsync(script: AdTrackingShortcut.Script);
 
@@ -214,6 +219,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     long visualTrainingGeneration = 0;
     Task<VisualFrameSample?>? visualRuntimeCapture = null;
     long visualRuntimeCaptureGeneration = 0;
+    long visualRuntimeGeneration = 0;
     long visualGeneration = 0;
     var nextVisualRuntimeSampleAt = DateTimeOffset.UtcNow;
     DetectionBounds? lastVisualRuntimeBounds = null;
@@ -222,6 +228,9 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     LearnedVisualMatch? pendingVisualMatch = null;
     VisualBlockedState? visualBlockedState = null;
     var recoveryBaseline = new DetectorRecoveryBaseline();
+    var visualMatchingEnabled = !options.NoVisual;
+    if (!visualMatchingEnabled)
+        Console.WriteLine("visual matching disabled");
 
     try
     {
@@ -230,6 +239,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             if (Interlocked.Exchange(ref detectorResetRequests, 0) > 0)
             {
                 visualGeneration++;
+                visualRuntimeGeneration++;
                 visualTrainingCancellation?.Cancel();
                 Interlocked.Exchange(ref visualTrainingRequests, 0);
                 visualBlockedState = null;
@@ -248,16 +258,29 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 Console.WriteLine("detector waiting for clean baseline");
             }
 
+            var visualToggleCount = Interlocked.Exchange(ref visualMatchingToggleRequests, 0);
+            while (visualToggleCount-- > 0)
+            {
+                visualMatchingEnabled = !visualMatchingEnabled;
+                visualRuntimeGeneration++;
+                visualMatcher.ResetProgressions();
+                pendingVisualMatch = null;
+                Console.WriteLine(visualMatchingEnabled
+                    ? "visual matching enabled"
+                    : "visual matching disabled");
+            }
+
             if (visualRuntimeCapture?.IsCompleted is true)
             {
                 var completedCaptureGeneration = visualRuntimeCaptureGeneration;
                 try
                 {
                     var runtimeSample = await visualRuntimeCapture;
-                    if (completedCaptureGeneration != visualGeneration ||
-                        Volatile.Read(ref detectorResetRequests) > 0)
+                    if (completedCaptureGeneration != visualRuntimeGeneration ||
+                        Volatile.Read(ref detectorResetRequests) > 0 ||
+                        Volatile.Read(ref visualMatchingToggleRequests) > 0)
                     {
-                        // X invalidated this sample while it was in flight.
+                        // X or V invalidated this automatic sample while it was in flight.
                     }
                     else if (runtimeSample is null)
                     {
@@ -291,8 +314,9 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                     }
                 }
                 catch (Exception) when (
-                    completedCaptureGeneration != visualGeneration ||
-                    Volatile.Read(ref detectorResetRequests) > 0)
+                    completedCaptureGeneration != visualRuntimeGeneration ||
+                    Volatile.Read(ref detectorResetRequests) > 0 ||
+                    Volatile.Read(ref visualMatchingToggleRequests) > 0)
                 {
                     // Failures from invalidated work are intentionally ignored.
                 }
@@ -405,6 +429,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 
             if (learnedVisualSignatures.Count > 0 &&
                 !visualSamplingDisabled &&
+                visualMatchingEnabled &&
                 !trackingPaused &&
                 !recoveryBaseline.IsAwaiting &&
                 publishedState is not true &&
@@ -414,7 +439,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 visualRuntimeCapture is null &&
                 DateTimeOffset.UtcNow >= nextVisualRuntimeSampleAt)
             {
-                visualRuntimeCaptureGeneration = visualGeneration;
+                visualRuntimeCaptureGeneration = visualRuntimeGeneration;
                 visualRuntimeCapture = VisualFrameSampler.CaptureAsync(sourcePage);
             }
 
@@ -500,9 +525,11 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             }
 
             if (pendingVisualMatch is not null &&
+                visualMatchingEnabled &&
                 !recoveryBaseline.IsAwaiting &&
                 Volatile.Read(ref trackingToggleRequests) == 0 &&
-                Volatile.Read(ref detectorResetRequests) == 0)
+                Volatile.Read(ref detectorResetRequests) == 0 &&
+                Volatile.Read(ref visualMatchingToggleRequests) == 0)
             {
                 var match = pendingVisualMatch;
                 pendingVisualMatch = null;
