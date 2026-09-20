@@ -187,6 +187,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
         options.ChannelUrl,
         options.MinimumDurationSeconds,
         options.YoutubeVideoId);
+    if (automaticQueueMode)
+        await youtubeQueueStateSaver.RefreshSnapshotAsync();
 
     bool? publishedState = null;
     bool? pendingState = null;
@@ -198,6 +200,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var nextYoutubeHealthCheckAt = DateTimeOffset.MinValue;
     var queueRefreshPolicy = new YoutubeQueueRefreshPolicy(initialDiscoveryCompletedAt);
     var nextQueueDepthCheckAt = DateTimeOffset.UtcNow;
+    var nextQueueSnapshotAt = DateTimeOffset.UtcNow.Add(YoutubeQueueStateSaver.CacheRefreshInterval);
     Task<YoutubeDiscovery>? feedRefresh = null;
     using var feedRefreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     var trackingPaused = false;
@@ -365,6 +368,12 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 }
             }
 
+            if (automaticQueueMode && DateTimeOffset.UtcNow >= nextQueueSnapshotAt)
+            {
+                await youtubeQueueStateSaver.RefreshSnapshotAsync();
+                nextQueueSnapshotAt = DateTimeOffset.UtcNow.Add(YoutubeQueueStateSaver.CacheRefreshInterval);
+            }
+
             var refreshCheckTime = DateTimeOffset.UtcNow;
             if (automaticQueueMode &&
                 feedRefresh is null &&
@@ -442,7 +451,10 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                             {
                                 var applyResult = await ApplyYoutubeQueueRestoreAsync(youtubePage, restoreResult.BrowserState);
                                 if (applyResult.Success)
+                                {
+                                    youtubeQueueStateSaver.CacheSnapshot(restoreResult.BrowserState);
                                     LogYoutubeQueueRestoreResult(restoreResult);
+                                }
                                 else
                                     Console.Error.WriteLine($"youtube queue restore failed: {applyResult.Error ?? "Unknown player error."}");
                             }

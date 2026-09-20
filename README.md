@@ -94,8 +94,10 @@ error.
 
 ## Queue save and restore
 
-In automatic mode, a normal exit or Ctrl+C makes a best-effort save to
-`youtube-queue.json`. Version 1 stores:
+In automatic mode, the app caches a queue snapshot approximately every 15 seconds.
+A normal exit or Ctrl+C first requests a fresh snapshot, then falls back to the
+last cached state if the browser or player page has already closed. The result is
+saved best-effort to `youtube-queue.json`. Version 1 stores:
 
 - save time, channel URL, and minimum-duration setting;
 - current video ID/title and playback position when available;
@@ -123,13 +125,18 @@ time.
 
 When signatures exist, the source player is sampled every 500 ms through the
 same direct-video, 9x8 luminance normalization, and 64-bit dHash pipeline used
-for training. A report-only match requires four ordered reference anchors;
-reference frames may be skipped to tolerate sampling phase differences. A match
-logs `learned visual match: <name>` but does not affect source/YouTube switching.
+for training. A report-only match requires four ordered reference anchors
+within the most recent 16 runtime samples, spanning at least three reference
+positions and containing at least three independently different frame hashes.
+Reference frames may be skipped, and up to two isolated runtime samples may miss,
+to tolerate sampling phase differences and cuts. The per-frame Hamming threshold
+is 10. A match logs `learned visual match: <name>` but does not affect
+source/YouTube switching.
 
 Set the `PLUTO_VISUAL_DEBUG` environment variable to `1` for concise near-match
-diagnostics containing the closest reference frame, Hamming distance, threshold,
-progression score, and reset/cooldown reason. Normal output does not include these
+diagnostics containing the global and expected-forward closest reference frames,
+Hamming distances, threshold, progression/miss counts, and the reason alignment
+advanced, stalled, restarted, or reset. Normal output does not include these
 per-sample diagnostics.
 
 Signatures created by the earlier screenshot-based fingerprint pipeline are

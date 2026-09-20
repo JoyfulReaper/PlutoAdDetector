@@ -8,6 +8,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../YoutubeQueueState.cs" Link="YoutubeQueueState.cs" />
+    <Compile Include="../../YoutubeQueueStateSaver.cs" Link="YoutubeQueueStateSaver.cs" />
     <Compile Include="../../YoutubeQueueRestoreAccess.cs" Link="YoutubeQueueRestoreAccess.cs" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.62.0" />
   </ItemGroup>
 </Project>

@@ -120,9 +120,9 @@ try
     Equal(1, firstMatch.Count);
     Equal("Ordered promo", firstMatch[0].SignatureName);
     Equal(true, diagnostics.Any(message =>
-        message.Contains("bestRef=0", StringComparison.Ordinal) &&
-        message.Contains("distance=5", StringComparison.Ordinal) &&
-        message.Contains("threshold=10", StringComparison.Ordinal)));
+        message.Contains("best=0/5", StringComparison.Ordinal) &&
+        message.Contains("forward=0-7", StringComparison.Ordinal) &&
+        message.Contains("progression=1", StringComparison.Ordinal)));
 
     // A single similar frame repeated cannot advance through ordered references.
     var repeatedFrameMatcher = new VisualSequenceMatcher([matchSignature]);
@@ -133,6 +133,61 @@ try
     var reverseMatcher = new VisualSequenceMatcher([matchSignature]);
     foreach (var referenceIndex in new[] { 7, 4, 2, 0 })
         Equal(0, reverseMatcher.AddSample(referenceFrames[referenceIndex], matchStart).Count);
+
+    // Model 250 ms training sampled at a 500 ms runtime phase: references are
+    // skipped, two cut/motion frames exceed the threshold, and an ambiguous
+    // runtime frame is globally closest to an earlier reference even though a
+    // slightly noisier reference is correct in the forward temporal window.
+    var ambiguousReferences = Enumerable.Range(0, 16).Select(GeneratedFrame).ToArray();
+    ambiguousReferences[8] = (VisualFingerprint.ParseDHash64(ambiguousReferences[2]) ^ 0x7UL).ToString("X16");
+    var ambiguousSignature = Signature(
+        "44444444-4444-4444-4444-444444444444",
+        "Phase-offset promo",
+        createdAt,
+        ambiguousReferences);
+    var ambiguousDiagnostics = new List<string>();
+    var ambiguousMatcher = new VisualSequenceMatcher([ambiguousSignature], true, ambiguousDiagnostics.Add);
+    var unrelatedOne = FindDistant(ambiguousReferences, 0x123456789ABCDEF0UL);
+    var unrelatedTwo = FindDistant(ambiguousReferences, 0x0FEDCBA987654321UL);
+    Equal(0, ambiguousMatcher.AddSample(WithNoise(ambiguousReferences[1], 0xFUL), matchStart).Count);
+    Equal(0, ambiguousMatcher.AddSample(WithNoise(ambiguousReferences[3], 0x1FUL), matchStart.AddMilliseconds(500)).Count);
+    Equal(0, ambiguousMatcher.AddSample(unrelatedOne, matchStart.AddMilliseconds(1_000)).Count);
+    Equal(0, ambiguousMatcher.AddSample(unrelatedTwo, matchStart.AddMilliseconds(1_500)).Count);
+    Equal(0, ambiguousMatcher.AddSample(ambiguousReferences[2], matchStart.AddMilliseconds(2_000)).Count);
+    Equal(1, ambiguousMatcher.AddSample(
+        WithNoise(ambiguousReferences[10], 0xFUL),
+        matchStart.AddMilliseconds(2_500)).Count);
+    Equal(true, ambiguousDiagnostics.Any(message =>
+        message.Contains("runtime=5", StringComparison.Ordinal) &&
+        message.Contains("best=2/0", StringComparison.Ordinal) &&
+        message.Contains("threshold=10", StringComparison.Ordinal) &&
+        message.Contains("forward=4-15", StringComparison.Ordinal) &&
+        message.Contains("bestForward=8/3", StringComparison.Ordinal) &&
+        message.Contains("progression=3", StringComparison.Ordinal) &&
+        message.Contains("misses=0", StringComparison.Ordinal) &&
+        message.Contains("advanced", StringComparison.Ordinal)));
+
+    // A static-looking run can match many duplicate reference positions, but it
+    // does not provide three independent visual anchors and therefore cannot match.
+    var staticFrame = "A5A5A5A5A5A5A5A5";
+    var staticSignature = Signature(
+        "55555555-5555-5555-5555-555555555555",
+        "Static promo",
+        createdAt,
+        Enumerable.Repeat(staticFrame, 12).ToArray());
+    var staticMatcher = new VisualSequenceMatcher([staticSignature]);
+    var staticVariants = new[] { staticFrame, WithNoise(staticFrame, 0x1UL), WithNoise(staticFrame, 0x2UL) };
+    for (var index = 0; index < 12; index++)
+        Equal(0, staticMatcher.AddSample(staticVariants[index % staticVariants.Length], matchStart.AddMilliseconds(index * 500)).Count);
+
+    // Deterministic unrelated content remains outside the near-match distance.
+    var unrelatedDiagnostics = new List<string>();
+    var unrelatedMatcher = new VisualSequenceMatcher([ambiguousSignature], true, unrelatedDiagnostics.Add);
+    for (var index = 0; index < 20; index++)
+        Equal(0, unrelatedMatcher.AddSample(
+            FindDistant(ambiguousReferences, 0xD1B54A32D192ED03UL + (ulong)index),
+            matchStart.AddMilliseconds(index * 500)).Count);
+    Equal(0, unrelatedDiagnostics.Count);
 
     // The same continuing occurrence is suppressed. After cooldown plus six
     // dissimilar frames, the signature is armed for a future occurrence.
@@ -154,7 +209,7 @@ finally
     Directory.Delete(testDirectory, recursive: true);
 }
 
-Console.WriteLine("PASS: visual persistence, dHash distance, ordered matching, single-frame rejection, and re-arming");
+Console.WriteLine("PASS: visual persistence, dHash distance, tolerant ordered alignment, ambiguity/miss handling, anti-spam, and re-arming");
 
 static LearnedVisualSignature Signature(
     string id,
@@ -178,3 +233,34 @@ static void Equal<T>(T expected, T actual)
 
 static string Noisy(string fingerprint) =>
     (VisualFingerprint.ParseDHash64(fingerprint) ^ 0x1FUL).ToString("X16");
+
+static string WithNoise(string fingerprint, ulong mask) =>
+    (VisualFingerprint.ParseDHash64(fingerprint) ^ mask).ToString("X16");
+
+static string GeneratedFrame(int index)
+{
+    var value = 0x9E3779B97F4A7C15UL * (ulong)(index + 1);
+    value ^= value >> 30;
+    value *= 0xBF58476D1CE4E5B9UL;
+    value ^= value >> 27;
+    value *= 0x94D049BB133111EBUL;
+    value ^= value >> 31;
+    return value.ToString("X16");
+}
+
+static string FindDistant(IEnumerable<string> references, ulong seed)
+{
+    var parsed = references.Select(VisualFingerprint.ParseDHash64).ToArray();
+    var candidate = seed;
+    for (var attempt = 0; attempt < 10_000; attempt++)
+    {
+        candidate = (candidate * 6364136223846793005UL) + 1442695040888963407UL;
+        if (parsed.All(reference =>
+            VisualFingerprint.HammingDistance(reference, candidate) > VisualSequenceMatcher.DiagnosticNearDistance))
+        {
+            return candidate.ToString("X16");
+        }
+    }
+
+    throw new Exception("Could not create deterministic unrelated fingerprint.");
+}

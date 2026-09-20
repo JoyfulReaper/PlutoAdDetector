@@ -9,15 +9,19 @@ internal sealed class VisualSequenceMatcher
     internal const int DiagnosticNearDistance = 16;
     internal const int RequiredOrderedMatches = 4;
     internal const int MaximumReferenceAdvance = 4;
-    internal const int AllowedRuntimeMisses = 1;
+    internal const int AllowedRuntimeMisses = 2;
+    internal const int MinimumDistinctEvidence = 3;
+    internal const int MinimumIndependentEvidenceHammingDistance = 3;
+    internal const int MinimumReferenceSpan = 3;
     internal const int RollingHistoryLength = 16;
     internal const int RearmHammingDistance = 14;
     internal const int RearmDissimilarSamples = 6;
     internal static readonly TimeSpan MatchCooldown = TimeSpan.FromSeconds(15);
 
+    private const int MaximumActiveAlignments = 96;
+
     private readonly bool _debugEnabled;
     private readonly Action<string>? _debugLog;
-    private readonly Queue<ulong> _runtimeHistory = new(RollingHistoryLength);
     private MatcherState[] _states = [];
     private long _runtimeSampleNumber;
     private DateTimeOffset? _firstRuntimeSampleAt;
@@ -37,7 +41,6 @@ internal sealed class VisualSequenceMatcher
         _states = signatures.Select(signature => new MatcherState(
             signature,
             signature.FrameFingerprints.Select(VisualFingerprint.ParseDHash64).ToArray())).ToArray();
-        _runtimeHistory.Clear();
         _runtimeSampleNumber = 0;
         _firstRuntimeSampleAt = null;
     }
@@ -51,10 +54,6 @@ internal sealed class VisualSequenceMatcher
     internal IReadOnlyList<LearnedVisualMatch> AddSample(string fingerprint, DateTimeOffset capturedAt)
     {
         var runtimeFingerprint = VisualFingerprint.ParseDHash64(fingerprint);
-        _runtimeHistory.Enqueue(runtimeFingerprint);
-        if (_runtimeHistory.Count > RollingHistoryLength)
-            _runtimeHistory.Dequeue();
-
         _runtimeSampleNumber++;
         _firstRuntimeSampleAt ??= capturedAt;
         var elapsed = capturedAt - _firstRuntimeSampleAt.Value;
@@ -63,8 +62,6 @@ internal sealed class VisualSequenceMatcher
         foreach (var state in _states)
         {
             var closest = FindClosest(runtimeFingerprint, state.ReferenceFrames, 0, state.ReferenceFrames.Length - 1);
-            var reason = "no anchor within threshold";
-            var progressionForLog = state.OrderedMatches;
 
             if (!state.Armed)
             {
@@ -74,102 +71,167 @@ internal sealed class VisualSequenceMatcher
                 else
                     state.DissimilarSamples = 0;
 
+                var cooldownReason = cooldownElapsed
+                    ? $"stalled: waiting for {RearmDissimilarSamples - state.DissimilarSamples} dissimilar samples"
+                    : "stalled: cooldown";
                 if (state.DissimilarSamples >= RearmDissimilarSamples)
                 {
                     state.Armed = true;
                     state.ResetProgression();
-                    reason = "re-armed after cooldown and dissimilar content";
-                }
-                else
-                {
-                    reason = cooldownElapsed
-                        ? $"waiting for {RearmDissimilarSamples - state.DissimilarSamples} dissimilar samples"
-                        : "cooldown";
+                    cooldownReason = "reset: re-armed after cooldown and dissimilar content";
                 }
 
-                LogDiagnostic(state, closest, elapsed, progressionForLog, reason);
+                LogDiagnostic(state, closest, default, default, null, elapsed, cooldownReason);
                 continue;
             }
 
-            if (state.OrderedMatches == 0)
-            {
-                if (closest.Distance <= PerFrameHammingThreshold)
-                {
-                    state.LastReferenceIndex = closest.Index;
-                    state.OrderedMatches = 1;
-                    state.RuntimeMisses = 0;
-                    reason = $"started at reference {closest.Index}";
-                }
-            }
-            else
-            {
-                var forwardStart = state.LastReferenceIndex + 1;
-                var forwardEnd = Math.Min(
-                    state.ReferenceFrames.Length - 1,
-                    state.LastReferenceIndex + MaximumReferenceAdvance);
-                var forward = FindClosest(runtimeFingerprint, state.ReferenceFrames, forwardStart, forwardEnd);
-                if (forward.Index >= 0 && forward.Distance <= PerFrameHammingThreshold)
-                {
-                    state.LastReferenceIndex = forward.Index;
-                    state.OrderedMatches++;
-                    state.RuntimeMisses = 0;
-                    reason = $"advanced to reference {forward.Index}";
-                }
-                else if (state.RuntimeMisses < AllowedRuntimeMisses)
-                {
-                    state.RuntimeMisses++;
-                    reason = $"ordered anchor missed ({state.RuntimeMisses}/{AllowedRuntimeMisses})";
-                }
-                else
-                {
-                    state.ResetProgression();
-                    if (closest.Distance <= PerFrameHammingThreshold)
-                    {
-                        state.LastReferenceIndex = closest.Index;
-                        state.OrderedMatches = 1;
-                        reason = $"reset and restarted at reference {closest.Index}";
-                    }
-                    else
-                    {
-                        reason = "reset after ordered anchors were lost";
-                    }
-                }
-            }
+            var previousBest = BestAlignment(state.ActiveAlignments);
+            var expectedRange = ForwardRange(previousBest, state.ReferenceFrames.Length);
+            var bestForward = FindClosest(
+                runtimeFingerprint,
+                state.ReferenceFrames,
+                expectedRange.Start,
+                expectedRange.End);
 
-            progressionForLog = state.OrderedMatches;
-            if (state.OrderedMatches >= RequiredOrderedMatches)
+            var next = AdvanceAlignments(state, runtimeFingerprint);
+            state.ActiveAlignments = next;
+            var currentBest = BestAlignment(next);
+            var matching = next
+                .Where(IsConfidentMatch)
+                .OrderByDescending(candidate => candidate.OrderedMatches)
+                .ThenByDescending(candidate => candidate.DistinctEvidenceCount)
+                .ThenBy(candidate => candidate.TotalDistance)
+                .FirstOrDefault();
+
+            string reason;
+            if (matching is not null)
             {
                 matches.Add(new(state.Signature.Id, state.Signature.Name));
                 state.Armed = false;
                 state.LastMatchAt = capturedAt;
                 state.DissimilarSamples = 0;
-                reason = "matched; entering cooldown";
+                reason = "advanced: matched; entering cooldown";
+                currentBest = matching;
                 state.ResetProgression();
             }
+            else
+            {
+                reason = DescribeTransition(previousBest, currentBest);
+            }
 
-            LogDiagnostic(state, closest, elapsed, progressionForLog, reason);
+            LogDiagnostic(state, closest, expectedRange, bestForward, currentBest, elapsed, reason);
         }
 
         return matches;
     }
 
+    private List<Alignment> AdvanceAlignments(MatcherState state, ulong runtimeFingerprint)
+    {
+        var candidates = new List<Alignment>();
+
+        // Every sufficiently close reference may begin a new hypothesis. Keeping
+        // alternatives is what prevents one ambiguous global nearest frame from
+        // committing the matcher to the wrong temporal path.
+        for (var referenceIndex = 0; referenceIndex < state.ReferenceFrames.Length; referenceIndex++)
+        {
+            var distance = VisualFingerprint.HammingDistance(runtimeFingerprint, state.ReferenceFrames[referenceIndex]);
+            if (distance <= PerFrameHammingThreshold)
+                candidates.Add(Alignment.Start(referenceIndex, distance, _runtimeSampleNumber, runtimeFingerprint));
+        }
+
+        foreach (var alignment in state.ActiveAlignments)
+        {
+            if (_runtimeSampleNumber - alignment.StartRuntimeSampleNumber >= RollingHistoryLength)
+                continue;
+
+            if (alignment.RuntimeMisses < AllowedRuntimeMisses)
+                candidates.Add(alignment with { RuntimeMisses = alignment.RuntimeMisses + 1 });
+
+            var range = ForwardRange(alignment, state.ReferenceFrames.Length);
+            for (var referenceIndex = range.Start; referenceIndex <= range.End; referenceIndex++)
+            {
+                var distance = VisualFingerprint.HammingDistance(runtimeFingerprint, state.ReferenceFrames[referenceIndex]);
+                if (distance <= PerFrameHammingThreshold)
+                    candidates.Add(alignment.Advance(referenceIndex, distance, runtimeFingerprint));
+            }
+        }
+
+        return candidates
+            .OrderByDescending(candidate => candidate.OrderedMatches)
+            .ThenByDescending(candidate => candidate.DistinctEvidenceCount)
+            .ThenBy(candidate => candidate.RuntimeMisses)
+            .ThenByDescending(candidate => candidate.ReferenceSpan)
+            .ThenBy(candidate => candidate.TotalDistance)
+            .Take(MaximumActiveAlignments)
+            .ToList();
+    }
+
+    private static string DescribeTransition(Alignment? previous, Alignment? current)
+    {
+        if (current is null)
+            return previous is null
+                ? "stalled: no anchor within threshold"
+                : "reset: no viable ordered alignment";
+        if (previous is null)
+            return $"restarted: began at reference {current.LastReferenceIndex}";
+        if (current.StartRuntimeSampleNumber > previous.StartRuntimeSampleNumber)
+            return $"restarted: selected reference {current.LastReferenceIndex}";
+        if (current.OrderedMatches > previous.OrderedMatches)
+            return $"advanced: reference {current.LastReferenceIndex}";
+        if (current.RuntimeMisses > previous.RuntimeMisses)
+            return $"stalled: miss {current.RuntimeMisses}/{AllowedRuntimeMisses}";
+        return "stalled: retained alternate alignment";
+    }
+
     private void LogDiagnostic(
         MatcherState state,
         ClosestFrame closest,
+        ReferenceRange forwardRange,
+        ClosestFrame bestForward,
+        Alignment? progression,
         TimeSpan elapsed,
-        int progression,
         string reason)
     {
         if (!_debugEnabled || _debugLog is null ||
-            (closest.Distance > DiagnosticNearDistance && progression == 0 && !reason.StartsWith("reset", StringComparison.Ordinal)))
+            (closest.Distance > DiagnosticNearDistance && progression is null &&
+             !reason.StartsWith("reset", StringComparison.Ordinal)))
         {
             return;
         }
 
+        var rangeText = forwardRange.IsValid ? $"{forwardRange.Start}-{forwardRange.End}" : "none";
+        var forwardText = bestForward.Index >= 0 ? $"{bestForward.Index}/{bestForward.Distance}" : "none";
         _debugLog(
             $"visual debug: {state.Signature.Name} runtime={_runtimeSampleNumber} time={elapsed.TotalSeconds:0.0}s " +
-            $"bestRef={closest.Index} distance={closest.Distance} threshold={PerFrameHammingThreshold} " +
-            $"progression={progression} reason={reason}");
+            $"best={closest.Index}/{closest.Distance} threshold={PerFrameHammingThreshold} " +
+            $"forward={rangeText} bestForward={forwardText} " +
+            $"progression={progression?.OrderedMatches ?? 0} misses={progression?.RuntimeMisses ?? 0} {reason}");
+    }
+
+    private static bool IsConfidentMatch(Alignment alignment) =>
+        alignment.OrderedMatches >= RequiredOrderedMatches &&
+        alignment.DistinctEvidenceCount >= MinimumDistinctEvidence &&
+        alignment.ReferenceSpan >= MinimumReferenceSpan;
+
+    private static Alignment? BestAlignment(IEnumerable<Alignment> alignments) => alignments
+        .OrderByDescending(candidate => candidate.OrderedMatches)
+        .ThenByDescending(candidate => candidate.DistinctEvidenceCount)
+        .ThenBy(candidate => candidate.RuntimeMisses)
+        .ThenByDescending(candidate => candidate.ReferenceSpan)
+        .ThenBy(candidate => candidate.TotalDistance)
+        .FirstOrDefault();
+
+    private static ReferenceRange ForwardRange(Alignment? alignment, int referenceCount)
+    {
+        if (referenceCount == 0)
+            return default;
+        if (alignment is null)
+            return new(0, referenceCount - 1);
+
+        var start = alignment.LastReferenceIndex + 1;
+        var intervals = alignment.RuntimeMisses + 1;
+        var end = Math.Min(referenceCount - 1, alignment.LastReferenceIndex + (MaximumReferenceAdvance * intervals));
+        return start <= end ? new(start, end) : default;
     }
 
     private static ClosestFrame FindClosest(ulong runtime, ulong[] references, int start, int end)
@@ -190,22 +252,57 @@ internal sealed class VisualSequenceMatcher
 
     private readonly record struct ClosestFrame(int Index, int Distance);
 
+    private readonly record struct ReferenceRange(int Start, int End)
+    {
+        internal bool IsValid => End >= Start;
+    }
+
+    private sealed record Alignment(
+        int FirstReferenceIndex,
+        int LastReferenceIndex,
+        int OrderedMatches,
+        int RuntimeMisses,
+        int TotalDistance,
+        long StartRuntimeSampleNumber,
+        ulong[] DistinctEvidence)
+    {
+        internal int DistinctEvidenceCount => DistinctEvidence.Length;
+        internal int ReferenceSpan => LastReferenceIndex - FirstReferenceIndex;
+
+        internal static Alignment Start(
+            int referenceIndex,
+            int distance,
+            long runtimeSampleNumber,
+            ulong fingerprint) =>
+            new(referenceIndex, referenceIndex, 1, 0, distance, runtimeSampleNumber, [fingerprint]);
+
+        internal Alignment Advance(int referenceIndex, int distance, ulong fingerprint)
+        {
+            var independent = DistinctEvidence.All(existing =>
+                VisualFingerprint.HammingDistance(existing, fingerprint) >= MinimumIndependentEvidenceHammingDistance);
+            var evidence = independent
+                ? [.. DistinctEvidence, fingerprint]
+                : DistinctEvidence;
+            return this with
+            {
+                LastReferenceIndex = referenceIndex,
+                OrderedMatches = OrderedMatches + 1,
+                RuntimeMisses = 0,
+                TotalDistance = TotalDistance + distance,
+                DistinctEvidence = evidence
+            };
+        }
+    }
+
     private sealed class MatcherState(LearnedVisualSignature signature, ulong[] referenceFrames)
     {
         internal LearnedVisualSignature Signature { get; } = signature;
         internal ulong[] ReferenceFrames { get; } = referenceFrames;
         internal bool Armed { get; set; } = true;
-        internal int LastReferenceIndex { get; set; } = -1;
-        internal int OrderedMatches { get; set; }
-        internal int RuntimeMisses { get; set; }
+        internal List<Alignment> ActiveAlignments { get; set; } = [];
         internal int DissimilarSamples { get; set; }
         internal DateTimeOffset LastMatchAt { get; set; }
 
-        internal void ResetProgression()
-        {
-            LastReferenceIndex = -1;
-            OrderedMatches = 0;
-            RuntimeMisses = 0;
-        }
+        internal void ResetProgression() => ActiveAlignments.Clear();
     }
 }
