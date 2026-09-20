@@ -42,7 +42,9 @@ internal static class VisualSignatureTrainer
                     {
                         initialBounds = sample.PlayerBounds;
                         Console.WriteLine(
-                            $"visual training capture: player={FormatBounds(initialBounds)} normalized={VisualFrameSampler.NormalizedWidth}x{VisualFrameSampler.NormalizedHeight}");
+                            $"visual training capture: player={FormatBounds(initialBounds)} " +
+                            $"normalized={VisualFrameSampler.NormalizedWidth}x{VisualFrameSampler.NormalizedHeight} " +
+                            $"sampleLatency={sample.SamplingMilliseconds:0.#}ms");
                     }
                     fingerprints.Add(sample.Fingerprint);
                 }
@@ -50,6 +52,10 @@ internal static class VisualSignatureTrainer
                     lastCaptureError = "source player was not visible";
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (VisualSamplingUnsupportedException)
             {
                 throw;
             }

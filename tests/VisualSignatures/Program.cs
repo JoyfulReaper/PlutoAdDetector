@@ -37,7 +37,8 @@ try
         Equal(1, root.GetProperty("version").GetInt32());
         Equal(2, root.GetProperty("signatures").GetArrayLength());
         Equal("dhash-64", root.GetProperty("signatures")[0].GetProperty("fingerprintFormat").GetString());
-        Equal(1, root.GetProperty("signatures")[0].GetProperty("fingerprintVersion").GetInt32());
+        Equal(VisualSignatureStore.CurrentFingerprintVersion,
+            root.GetProperty("signatures")[0].GetProperty("fingerprintVersion").GetInt32());
         Equal(2, root.GetProperty("signatures")[0].GetProperty("frameFingerprints").GetArrayLength());
     }
 
@@ -47,6 +48,16 @@ try
     Equal("Test signature", loaded.Signatures[0].Name);
     Equal("0123456789ABCDEF", loaded.Signatures[0].FrameFingerprints[0]);
     Equal(500, loaded.Signatures[0].SampleIntervalMilliseconds);
+
+    var legacyJson = File.ReadAllText(path).Replace(
+        $"\"fingerprintVersion\": {VisualSignatureStore.CurrentFingerprintVersion}",
+        "\"fingerprintVersion\": 1",
+        StringComparison.Ordinal);
+    File.WriteAllText(path, legacyJson);
+    var legacy = store.Load();
+    Equal(0, legacy.Signatures.Count);
+    Equal(true, legacy.Warnings.All(warning => warning.Contains("fingerprint version 1", StringComparison.Ordinal)));
+    Equal(true, store.Save([first, second]).Success);
 
     var validJson = JsonSerializer.Serialize(first, new JsonSerializerOptions
     {

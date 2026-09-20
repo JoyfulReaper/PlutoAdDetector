@@ -62,7 +62,9 @@ internal sealed class VisualSignatureStore
     internal const string DefaultFileName = "visual-signatures.json";
     internal const int CurrentFileVersion = 1;
     internal const string CurrentFingerprintFormat = "dhash-64";
-    internal const int CurrentFingerprintVersion = 1;
+    // Version 2 fingerprints decoded <video> pixels directly. Version 1 used
+    // composed page screenshots and is intentionally incompatible.
+    internal const int CurrentFingerprintVersion = 2;
 
     private static readonly JsonSerializerOptions WriteOptions = new()
     {

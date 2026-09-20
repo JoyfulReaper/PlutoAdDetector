@@ -206,6 +206,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var nextVisualRuntimeSampleAt = DateTimeOffset.UtcNow;
     DetectionBounds? lastVisualRuntimeBounds = null;
     string? loggedVisualRuntimeError = null;
+    var visualSamplingDisabled = false;
 
     try
     {
@@ -228,7 +229,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                                 $"visual runtime matching started: signatures={learnedVisualSignatures.Count} " +
                                 $"player={FormatBounds(runtimeSample.PlayerBounds)} " +
                                 $"normalized={VisualFrameSampler.NormalizedWidth}x{VisualFrameSampler.NormalizedHeight} " +
-                                $"interval={VisualSequenceMatcher.RuntimeSampleIntervalMilliseconds}ms");
+                                $"interval={VisualSequenceMatcher.RuntimeSampleIntervalMilliseconds}ms " +
+                                $"sampleLatency={runtimeSample.SamplingMilliseconds:0.#}ms");
                         }
                         else if (visualDebugEnabled && lastVisualRuntimeBounds != runtimeSample.PlayerBounds)
                         {
@@ -243,6 +245,13 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                             Console.WriteLine($"learned visual match: {match.SignatureName}");
                     }
                 }
+                catch (VisualSamplingUnsupportedException exception)
+                {
+                    visualMatcher.ResetProgressions();
+                    if (!visualSamplingDisabled)
+                        Console.Error.WriteLine($"learned visual sampling disabled for this run: {exception.Message}");
+                    visualSamplingDisabled = true;
+                }
                 catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
                     visualMatcher.ResetProgressions();
@@ -253,6 +262,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 finally
                 {
                     visualRuntimeCapture = null;
+                    nextVisualRuntimeSampleAt = DateTimeOffset.UtcNow.AddMilliseconds(
+                        VisualSequenceMatcher.RuntimeSampleIntervalMilliseconds);
                 }
             }
 
@@ -287,6 +298,12 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                 }
+                catch (VisualSamplingUnsupportedException exception)
+                {
+                    if (!visualSamplingDisabled)
+                        Console.Error.WriteLine($"learned visual sampling disabled for this run: {exception.Message}");
+                    visualSamplingDisabled = true;
+                }
                 catch (Exception exception)
                 {
                     Console.Error.WriteLine($"visual training failed: {exception.Message}");
@@ -299,7 +316,11 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
 
             if (Interlocked.Exchange(ref visualTrainingRequests, 0) > 0)
             {
-                if (visualTraining is not null)
+                if (visualSamplingDisabled)
+                {
+                    Console.Error.WriteLine("visual training unavailable: direct video sampling is disabled for this run");
+                }
+                else if (visualTraining is not null)
                 {
                     Console.Error.WriteLine("visual training already active; request ignored");
                 }
@@ -312,12 +333,11 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             }
 
             if (learnedVisualSignatures.Count > 0 &&
+                !visualSamplingDisabled &&
                 visualTraining is null &&
                 visualRuntimeCapture is null &&
                 DateTimeOffset.UtcNow >= nextVisualRuntimeSampleAt)
             {
-                nextVisualRuntimeSampleAt = DateTimeOffset.UtcNow.AddMilliseconds(
-                    VisualSequenceMatcher.RuntimeSampleIntervalMilliseconds);
                 visualRuntimeCapture = VisualFrameSampler.CaptureAsync(sourcePage);
             }
 

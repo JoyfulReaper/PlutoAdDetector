@@ -115,13 +115,15 @@ logged and do not stop shutdown or normal application startup.
 ## Learned visual training
 
 Press `T` while the source tab has focus to record about six seconds from the
-visible source player's full bounds. Frames are normalized in memory and saved as
-compact 64-bit perceptual fingerprints in `visual-signatures.json`; training does
-not save the screenshots themselves. Only one training session runs at a time.
+largest visible source `<video>`. The decoded video frame is drawn directly into
+a 9x8 in-memory canvas and saved as a compact 64-bit perceptual fingerprint in
+`visual-signatures.json`; training does not take or save screenshots. DOM overlays
+above the video are intentionally excluded. Only one training session runs at a
+time.
 
 When signatures exist, the source player is sampled every 500 ms through the
-same full-player crop, 9x8 grayscale normalization, and 64-bit dHash pipeline
-used for training. A report-only match requires four ordered reference anchors;
+same direct-video, 9x8 luminance normalization, and 64-bit dHash pipeline used
+for training. A report-only match requires four ordered reference anchors;
 reference frames may be skipped to tolerate sampling phase differences. A match
 logs `learned visual match: <name>` but does not affect source/YouTube switching.
 
@@ -129,6 +131,11 @@ Set the `PLUTO_VISUAL_DEBUG` environment variable to `1` for concise near-match
 diagnostics containing the closest reference frame, Hamming distance, threshold,
 progression score, and reset/cooldown reason. Normal output does not include these
 per-sample diagnostics.
+
+Signatures created by the earlier screenshot-based fingerprint pipeline are
+version-incompatible and must be retrained. If browser security, cross-origin
+media, or DRM prevents canvas pixel access, learned visual sampling logs one error
+and disables itself for that run; it does not fall back to continuous screenshots.
 
 ## Keyboard shortcuts
 
