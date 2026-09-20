@@ -11,21 +11,34 @@ internal static class VisualSignatureTrainer
     internal const int TrainingDurationMilliseconds = 6_000;
     internal const int SampleIntervalMilliseconds = 250;
     internal const int MinimumUsableSamples = 8;
+    internal const string VideoElementChangedError = "source video element changed";
 
     private const int TargetSampleCount = TrainingDurationMilliseconds / SampleIntervalMilliseconds;
 
     internal static async Task<VisualSignatureTrainingResult> TrainAsync(
         IPage sourcePage,
+        CancellationToken cancellationToken) =>
+        await TrainAsync(
+            _ => VisualFrameSampler.CaptureAsync(sourcePage),
+            TargetSampleCount,
+            SampleIntervalMilliseconds,
+            cancellationToken);
+
+    internal static async Task<VisualSignatureTrainingResult> TrainAsync(
+        Func<CancellationToken, Task<VisualFrameSample?>> captureAsync,
+        int targetSampleCount,
+        int sampleIntervalMilliseconds,
         CancellationToken cancellationToken)
     {
-        var fingerprints = new List<string>(TargetSampleCount);
+        var fingerprints = new List<string>(targetSampleCount);
         string? lastCaptureError = null;
         DetectionBounds? initialBounds = null;
+        string? videoElementIdentity = null;
         var timer = Stopwatch.StartNew();
 
-        for (var sampleIndex = 0; sampleIndex < TargetSampleCount; sampleIndex++)
+        for (var sampleIndex = 0; sampleIndex < targetSampleCount; sampleIndex++)
         {
-            var targetTime = TimeSpan.FromMilliseconds(sampleIndex * SampleIntervalMilliseconds);
+            var targetTime = TimeSpan.FromMilliseconds(sampleIndex * sampleIntervalMilliseconds);
             var delay = targetTime - timer.Elapsed;
             if (delay > TimeSpan.Zero)
                 await Task.Delay(delay, cancellationToken);
@@ -35,9 +48,21 @@ internal static class VisualSignatureTrainer
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var sample = await VisualFrameSampler.CaptureAsync(sourcePage);
+                var sample = await captureAsync(cancellationToken);
                 if (sample is not null)
                 {
+                    if (videoElementIdentity is null)
+                    {
+                        videoElementIdentity = sample.VideoElementIdentity;
+                    }
+                    else if (!string.Equals(
+                        videoElementIdentity,
+                        sample.VideoElementIdentity,
+                        StringComparison.Ordinal))
+                    {
+                        return new(null, fingerprints.Count, VideoElementChangedError);
+                    }
+
                     if (initialBounds is null)
                     {
                         initialBounds = sample.PlayerBounds;

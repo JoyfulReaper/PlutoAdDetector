@@ -5,6 +5,7 @@ using Microsoft.Playwright;
 internal sealed record VisualFrameSample(
     string Fingerprint,
     DetectionBounds PlayerBounds,
+    string VideoElementIdentity,
     double SamplingMilliseconds);
 
 internal sealed class VisualSamplingUnsupportedException(string message) : Exception(message);
@@ -43,6 +44,24 @@ internal static class VisualFrameSampler
 
           const video = player.element;
           const rect = player.rect;
+          const samplerStateKey = '__plutoAdDetectorVisualSamplerState';
+          let samplerState = globalThis[samplerStateKey];
+          if (!samplerState || !(samplerState.videoIds instanceof WeakMap)) {
+            samplerState = {
+              documentId: typeof globalThis.crypto?.randomUUID === 'function'
+                ? globalThis.crypto.randomUUID()
+                : `${Date.now()}-${Math.random()}`,
+              videoIds: new WeakMap(),
+              nextVideoId: 1
+            };
+            globalThis[samplerStateKey] = samplerState;
+          }
+          let videoId = samplerState.videoIds.get(video);
+          if (videoId === undefined) {
+            videoId = samplerState.nextVideoId++;
+            samplerState.videoIds.set(video, videoId);
+          }
+          const videoElementIdentity = `${samplerState.documentId}:${videoId}`;
           const playerBounds = {
             x: Math.max(0, Math.min(innerWidth, rect.left)),
             y: Math.max(0, Math.min(innerHeight, rect.top)),
@@ -69,7 +88,7 @@ internal static class VisualFrameSampler
                 (pixels[index + 1] * 0.587) +
                 (pixels[index + 2] * 0.114)));
             }
-            return JSON.stringify({ status: 'ok', playerBounds, luminance });
+            return JSON.stringify({ status: 'ok', playerBounds, videoElementIdentity, luminance });
           } catch (error) {
             const errorName = error?.name || 'Error';
             const status = errorName === 'InvalidStateError' ? 'unavailable' : 'unsupported';
@@ -99,18 +118,22 @@ internal static class VisualFrameSampler
             throw new VisualSamplingUnsupportedException(
                 $"direct video-frame pixel access is unsupported ({detail})");
         }
-        if (result.PlayerBounds is null || result.Luminance is null)
+        if (result.PlayerBounds is null ||
+            string.IsNullOrWhiteSpace(result.VideoElementIdentity) ||
+            result.Luminance is null)
             throw new VisualSamplingUnsupportedException("Direct video sampler returned incomplete pixel data.");
 
         return new(
             VisualFingerprint.CreateDHash64(result.Luminance),
             result.PlayerBounds,
+            result.VideoElementIdentity,
             Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
     }
 
     private sealed record DirectVideoSampleResult(
         string Status,
         DetectionBounds? PlayerBounds,
+        string? VideoElementIdentity,
         int[]? Luminance,
         string? ErrorName,
         string? Error);

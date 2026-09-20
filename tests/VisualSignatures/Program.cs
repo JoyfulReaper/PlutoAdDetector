@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 
 var testDirectory = Path.Combine(Path.GetTempPath(), $"pluto-visual-signatures-{Guid.NewGuid():N}");
@@ -258,6 +259,61 @@ try
     Equal(0, boundaryMatcher.AddSample(referenceFrames[4], matchStart.AddMinutes(3).AddMilliseconds(1_000)).Count);
     Equal(1, boundaryMatcher.AddSample(referenceFrames[7], matchStart.AddMinutes(3).AddMilliseconds(1_500)).Count);
 
+    var trainingBounds = new DetectionBounds(10, 20, 1280, 720);
+    var trainingFingerprint = referenceFrames[0];
+
+    // Stable element identity produces a normal completed signature.
+    var stableTraining = await VisualSignatureTrainer.TrainAsync(
+        _ => Task.FromResult<VisualFrameSample?>(new(
+            trainingFingerprint,
+            trainingBounds,
+            "document-a:1",
+            0.1)),
+        VisualSignatureTrainer.MinimumUsableSamples,
+        sampleIntervalMilliseconds: 1,
+        CancellationToken.None);
+    Equal(true, stableTraining.Signature is not null);
+    Equal(VisualSignatureTrainer.MinimumUsableSamples, stableTraining.UsableSamples);
+    Equal(VisualSignatureTrainer.MinimumUsableSamples, stableTraining.Signature?.FrameFingerprints.Length);
+
+    // Identical bounds do not hide replacement of the underlying video element.
+    var replacementSample = 0;
+    var replacedTraining = await VisualSignatureTrainer.TrainAsync(
+        _ =>
+        {
+            replacementSample++;
+            return Task.FromResult<VisualFrameSample?>(new(
+                trainingFingerprint,
+                trainingBounds,
+                replacementSample < 5 ? "document-a:1" : "document-a:2",
+                0.1));
+        },
+        VisualSignatureTrainer.MinimumUsableSamples,
+        sampleIntervalMilliseconds: 1,
+        CancellationToken.None);
+    Equal<LearnedVisualSignature?>(null, replacedTraining.Signature);
+    Equal(4, replacedTraining.UsableSamples);
+    Equal(VisualSignatureTrainer.VideoElementChangedError, replacedTraining.Error);
+
+    // Cancellation interrupts the schedule rather than waiting for the full
+    // production training duration.
+    using (var trainingCancellation = new CancellationTokenSource())
+    {
+        var cancellationTimer = Stopwatch.StartNew();
+        var cancelledTraining = VisualSignatureTrainer.TrainAsync(
+            _ => Task.FromResult<VisualFrameSample?>(new(
+                trainingFingerprint,
+                trainingBounds,
+                "document-a:1",
+                0.1)),
+            targetSampleCount: 24,
+            sampleIntervalMilliseconds: 250,
+            trainingCancellation.Token);
+        trainingCancellation.CancelAfter(25);
+        await ThrowsCancellationAsync(cancelledTraining);
+        Equal(true, cancellationTimer.Elapsed < TimeSpan.FromSeconds(1));
+    }
+
     var visualMatch = new LearnedVisualMatch(matchSignature.Id, matchSignature.Name);
     var visualStartAt = createdAt.AddHours(2);
     var visualStart = VisualBlockPolicy.TryStart(
@@ -342,6 +398,18 @@ static void Equal<T>(T expected, T actual)
         throw new Exception($"Expected {expected}, got {actual}");
 }
 
+static async Task ThrowsCancellationAsync(Task task)
+{
+    try
+    {
+        await task;
+        throw new Exception("Expected training cancellation.");
+    }
+    catch (OperationCanceledException)
+    {
+    }
+}
+
 static string Noisy(string fingerprint) =>
     (VisualFingerprint.ParseDHash64(fingerprint) ^ 0x1FUL).ToString("X16");
 
@@ -374,4 +442,14 @@ static string FindDistant(IEnumerable<string> references, ulong seed)
     }
 
     throw new Exception("Could not create deterministic unrelated fingerprint.");
+}
+
+internal sealed record DetectionBounds(float X, float Y, float Width, float Height);
+
+internal static class JsonOptions
+{
+    internal static readonly JsonSerializerOptions Instance = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 }

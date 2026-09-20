@@ -361,8 +361,18 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                     }
                     else if (result.Signature is null)
                     {
-                        Console.Error.WriteLine(
-                            $"visual training failed: {result.Error ?? "unknown error"} ({result.UsableSamples} usable samples)");
+                        if (string.Equals(
+                            result.Error,
+                            VisualSignatureTrainer.VideoElementChangedError,
+                            StringComparison.Ordinal))
+                        {
+                            Console.Error.WriteLine($"visual training aborted: {result.Error}");
+                        }
+                        else
+                        {
+                            Console.Error.WriteLine(
+                                $"visual training failed: {result.Error ?? "unknown error"} ({result.UsableSamples} usable samples)");
+                        }
                     }
                     else
                     {
@@ -731,6 +741,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     finally
     {
         await feedRefreshCancellation.CancelAsync();
+        visualTrainingCancellation?.Cancel();
         if (visualTraining is not null)
         {
             try
@@ -746,12 +757,9 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             {
                 Console.Error.WriteLine($"visual training cleanup failed: {exception.Message}");
             }
-            finally
-            {
-                visualTrainingCancellation?.Dispose();
-                visualTrainingCancellation = null;
-            }
         }
+        visualTrainingCancellation?.Dispose();
+        visualTrainingCancellation = null;
         if (visualRuntimeCapture is not null)
         {
             try
