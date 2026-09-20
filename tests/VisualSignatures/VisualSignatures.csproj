@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Playwright" Version="1.62.0" />
+    <Compile Include="../../VisualSignatures.cs" Link="VisualSignatures.cs" />
+    <Compile Include="../../VisualFrameSampler.cs" Link="VisualFrameSampler.cs" />
+    <Compile Include="../../VisualSignatureTrainer.cs" Link="VisualSignatureTrainer.cs" />
+    <Compile Include="../../VisualSequenceMatcher.cs" Link="VisualSequenceMatcher.cs" />
+    <Compile Include="../../VisualBlockedState.cs" Link="VisualBlockedState.cs" />
+    <Compile Include="../../DetectorRecoveryBaseline.cs" Link="DetectorRecoveryBaseline.cs" />
+    <Compile Include="../../VisualRuntimeState.cs" Link="VisualRuntimeState.cs" />
+  </ItemGroup>
+</Project>

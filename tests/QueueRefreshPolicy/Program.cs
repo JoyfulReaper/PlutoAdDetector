@@ -13,7 +13,29 @@ Equal(false, policy.ShouldRefresh(2, failedAttemptCompleted.AddMinutes(4).AddSec
 Equal(true, policy.ShouldRefresh(2, failedAttemptCompleted.AddMinutes(5)));
 Equal(true, YoutubeQueueRefreshPolicy.IsAutomaticMode(null));
 Equal(false, YoutubeQueueRefreshPolicy.IsAutomaticMode("AAAAAAAAAAA"));
-Console.WriteLine("PASS: low-queue threshold, completion-based cooldown, and single-video discovery exclusion");
+
+var discoveryGeneration = new YoutubeFeedDiscoveryGeneration();
+
+// A discovery captured before a successful manual restore is stale.
+var discoveryBeforeRestore = discoveryGeneration.Capture();
+discoveryGeneration.RecordSuccessfulQueueRestore();
+Equal(false, discoveryGeneration.IsCurrent(discoveryBeforeRestore));
+
+// A failed restore does not advance the generation, so the discovery remains usable.
+var discoveryBeforeFailedRestore = discoveryGeneration.Capture();
+Equal(true, discoveryGeneration.IsCurrent(discoveryBeforeFailedRestore));
+
+// Normal discovery remains current while no successful restore occurs.
+var normalDiscovery = discoveryGeneration.Capture();
+Equal(true, discoveryGeneration.IsCurrent(normalDiscovery));
+
+// Discarding stale results still records completion and enforces the cooldown.
+var staleAttemptCompleted = startupCompleted.AddMinutes(12);
+policy.RecordAttemptCompleted(staleAttemptCompleted);
+Equal(false, policy.CooldownElapsed(staleAttemptCompleted.AddMinutes(4).AddSeconds(59)));
+Equal(true, policy.CooldownElapsed(staleAttemptCompleted.AddMinutes(5)));
+
+Console.WriteLine("PASS: low-queue threshold, completion cooldown, discovery restore generation, and single-video exclusion");
 
 static void Equal<T>(T expected, T actual)
 {

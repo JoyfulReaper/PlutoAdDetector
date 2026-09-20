@@ -9,6 +9,30 @@ internal static class AdTrackingShortcut
             if (event.code === 'KeyP') {
               event.preventDefault();
               globalThis.requestAdTrackingToggle();
+            } else if (event.code === 'KeyX') {
+              if (typeof globalThis.requestDetectorReset === 'function') {
+                event.preventDefault();
+                globalThis.requestDetectorReset();
+              } else if (globalThis.top !== globalThis) {
+                event.preventDefault();
+                globalThis.top.postMessage('pluto-ad-detector:force-source-reset', '*');
+              }
+            } else if (event.code === 'KeyV') {
+              if (typeof globalThis.requestVisualMatchingToggle === 'function') {
+                event.preventDefault();
+                globalThis.requestVisualMatchingToggle();
+              } else if (globalThis.top !== globalThis) {
+                event.preventDefault();
+                globalThis.top.postMessage('pluto-ad-detector:toggle-visual-matching', '*');
+              }
+            } else if (event.code === 'KeyT') {
+              if (typeof globalThis.requestVisualSignatureTraining === 'function') {
+                event.preventDefault();
+                globalThis.requestVisualSignatureTraining();
+              } else if (globalThis.top !== globalThis) {
+                event.preventDefault();
+                globalThis.top.postMessage('pluto-ad-detector:train-visual-signature', '*');
+              }
             } else if (event.code === 'KeyN' && globalThis.top !== globalThis) {
               event.preventDefault();
               globalThis.top.postMessage('pluto-ad-detector:skip-youtube-video', '*');
@@ -20,6 +44,19 @@ internal static class AdTrackingShortcut
               globalThis.top.postMessage('pluto-ad-detector:reload-youtube-queue', '*');
             }
           }, true);
+          globalThis.addEventListener('message', event => {
+            if (globalThis.top !== globalThis) return;
+            if (event.data === 'pluto-ad-detector:train-visual-signature' &&
+                typeof globalThis.requestVisualSignatureTraining === 'function') {
+              globalThis.requestVisualSignatureTraining();
+            } else if (event.data === 'pluto-ad-detector:force-source-reset' &&
+                       typeof globalThis.requestDetectorReset === 'function') {
+              globalThis.requestDetectorReset();
+            } else if (event.data === 'pluto-ad-detector:toggle-visual-matching' &&
+                       typeof globalThis.requestVisualMatchingToggle === 'function') {
+              globalThis.requestVisualMatchingToggle();
+            }
+          });
         })();
         """;
 }

@@ -1,6 +1,6 @@
 const { spawnSync } = require('node:child_process');
 const assert = require('node:assert/strict');
-const run = args => spawnSync('dotnet', ['bin/Debug/net10.0/PlutoAdDetector.dll', ...args], { encoding: 'utf8', timeout: 10000 });
+const run = args => spawnSync('dotnet', ['bin/Release/net10.0/PlutoAdDetector.dll', ...args], { encoding: 'utf8', timeout: 10000 });
 const video = 'https://www.youtube.com/watch?v=M7lc1UVf-VE';
 const channel = 'https://www.youtube.com/@MeidasTouch';
 for (const url of [video, 'https://youtu.be/M7lc1UVf-VE?t=10', 'https://www.youtube.com/embed/M7lc1UVf-VE', 'https://www.youtube.com/shorts/M7lc1UVf-VE']) {
@@ -12,6 +12,8 @@ assert.equal(run(['--scan-mode', 'focused', '--help']).status, 0);
 assert.equal(run(['--scan-mode', 'full', '--help']).status, 0);
 assert.equal(run(['--resume', '--help']).status, 0);
 assert.match(run(['--help']).stderr, /--resume/);
+assert.equal(run(['--no-visual', '--help']).status, 0);
+assert.match(run(['--help']).stderr, /--no-visual/);
 assert.equal(run(['--url', 'https://example.com/stream', '--help']).status, 0);
 assert.equal(run(['--channel-url', channel, '--help']).status, 0);
 for (const args of [

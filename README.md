@@ -13,6 +13,8 @@ changes look like:
 ```text
 ad started [DOM]
 ad ended [DOM]
+blocked segment started [VISUAL:<signature name>]
+blocked segment ended [VISUAL:timeout]
 ad tracking paused
 ad tracking resumed
 ```
@@ -33,6 +35,11 @@ Playwright browser is the fallback. The app uses a dedicated persistent profile
 at `browser-profile/`, never your normal Chrome profile. Headed mode uses the real
 window size and remains available for normal interaction.
 
+If Pluto or another source does not fill the display and Chrome's normal browser
+controls remain visible, press `F11` to toggle Chrome's browser fullscreen as a
+workaround. This is a Chrome shortcut, not a PlutoAdDetector command; press `F11`
+again to leave fullscreen.
+
 Useful examples:
 
 ```powershell
@@ -50,6 +57,9 @@ dotnet run -- --url "https://example.com/stream"
 
 # Debug with the original whole-document detector
 dotnet run -- --scan-mode full
+
+# Start with automatic learned visual sampling disabled
+dotnet run -- --no-visual
 ```
 
 ## YouTube modes
@@ -94,8 +104,10 @@ error.
 
 ## Queue save and restore
 
-In automatic mode, a normal exit or Ctrl+C makes a best-effort save to
-`youtube-queue.json`. Version 1 stores:
+In automatic mode, the app caches a queue snapshot approximately every 15 seconds.
+A normal exit or Ctrl+C first requests a fresh snapshot, then falls back to the
+last cached state if the browser or player page has already closed. The result is
+saved best-effort to `youtube-queue.json`. Version 1 stores:
 
 - save time, channel URL, and minimum-duration setting;
 - current video ID/title and playback position when available;
@@ -112,6 +124,53 @@ refresh behavior afterward.
 Single-video mode does not read or write this file. Save and restore failures are
 logged and do not stop shutdown or normal application startup.
 
+## Learned visual training
+
+Press `T` while the source tab has focus to record about six seconds from the
+largest visible source `<video>`. Training samples the decoded video directly,
+normalizes each frame in memory, and stores an ordered sequence of compact
+perceptual fingerprints in `visual-signatures.json`. It does not save training
+screenshots, and DOM overlays above the video are intentionally excluded. Only
+one training session runs at a time.
+
+These signatures are not an ML model and do not classify arbitrary concepts.
+They are best suited to recurring identical or visually similar promos, bumpers,
+repeated ads, PSAs, station cards, and similar repeated segments. If the segment
+changes materially, it may need to be taught again.
+
+When signatures exist, automatic matching samples decoded source-video frames
+directly at a modest rate through the same normalization and fingerprinting path
+used for training. The matcher requires several ordered similar frames and
+tolerates sampling jitter, skipped reference frames, and isolated mismatches. A
+confirmed match mutes and hides the source, brings YouTube forward, and resumes
+it. The visual block then waits about 30 seconds for Pluto's normal DOM ad
+detector. If the DOM ad is confirmed, it takes over seamlessly without repeating
+the mute, tab, or playback operations. If no DOM ad follows, the visual timeout
+pauses YouTube, restores the source, and unmutes it.
+
+Set the `PLUTO_VISUAL_DEBUG` environment variable to `1` for concise near-match
+diagnostics containing the global and expected-forward closest reference frames,
+Hamming distances, threshold, progression/miss counts, and the reason alignment
+advanced, stalled, restarted, or reset. Normal output does not include these
+per-sample diagnostics.
+
+Press `V` to toggle automatic runtime visual sampling for the current run, or use
+`--no-visual` to start with it disabled. DOM ad detection continues normally,
+and `T` training remains available because it is an explicit action. Disabling
+automatic matching does not delete learned signatures or interrupt an already
+active visual block; that block still ends through DOM handoff or its timeout.
+
+Automatic sampling can occasionally cause mild screen flashing or display
+disturbance on some Chrome/GPU/video-composition configurations. It does not
+necessarily happen on every 500 ms sample, and severity varies by system. This is
+a proof-of-concept limitation; press `V` or start with `--no-visual` if it is
+distracting. Ordinary DOM detection remains available.
+
+Older incompatible signature versions are skipped and must be retrained. If
+browser security, cross-origin media, or DRM prevents canvas pixel access,
+learned visual sampling logs one error and disables itself for that run; it does
+not fall back to continuous screenshots.
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -119,11 +178,22 @@ logged and do not stop shutdown or normal application startup.
 | `N` | Skip the current automatic-queue video, mark it completed for this run, and select the next video. Unavailable in single-video mode. |
 | `P` | Toggle ad tracking. Pausing also pauses YouTube, foregrounds/unmutes the source, and suppresses switching while the detector loop stays alive. Resuming clears debounce state and samples fresh. |
 | `R` | Reload `youtube-queue.json` in automatic mode. Allowed only while tracking is paused or YouTube is foregrounded. The restored video keeps the player's current playing/paused state. |
+| `T` | Teach a visual signature from a short sequence of the source player's full bounds. Available while the source tab has focus. |
+| `V` | Toggle automatic learned visual sampling and matching. DOM detection and explicit `T` training remain available. |
+| `X` | Force the source back immediately, unmute it, pause YouTube, and reset transient detector state. Detection resumes only after the configured number of consecutive clean DOM samples. |
 | `H` or `?` | Briefly show keyboard help over the local YouTube page. |
 
-`N`, `R`, and help work from the local player page, including when focus is inside
-the YouTube iframe. `P` works from either browser tab. Queue refreshes continue
-while ad tracking is paused; pausing tracking does not clear or reorder the queue.
+`N`, `R`, `V`, `X`, and help work from the local player page, including when
+focus is inside the YouTube iframe. `P`, `V`, and `X` work from either browser
+tab, while `T` is source-tab specific. Queue refreshes continue while ad tracking
+is paused; pausing or resetting the detector does not clear or reorder the queue.
+
+`P`, `V`, and `X` intentionally have different scopes: `P` pauses or resumes
+all tracking, `V` toggles only automatic learned visual matching, and `X` is an
+immediate recovery action when the current result is wrong. `X` clears transient
+DOM and visual state, pauses YouTube, restores/unmutes the source, and waits for a
+clean baseline before re-arming. It does not delete learned visual signatures or
+the YouTube queue.
 
 ## Detection and source switching
 
@@ -144,8 +214,8 @@ automatic compatibility with other services.
 
 Until a semantic ad indicator has been observed, the app periodically saves the
 largest player's upper-left crop under `captures/`. These images are diagnostics
-for possible future visual detection; screenshots are not currently used to
-classify ads.
+for DOM-detector troubleshooting. They are not used by learned visual matching,
+which samples decoded `<video>` frames directly.
 
 ## CLI options
 
@@ -157,6 +227,7 @@ classify ads.
 | `--youtube-url <url>` | Single-video override; mutually exclusive with an explicitly supplied `--channel-url`. |
 | `--min-duration-seconds <n>` | Automatic queue minimum. Default: `300`. |
 | `--resume` | Restore a compatible automatic queue from `youtube-queue.json`. |
+| `--no-visual` | Start with automatic learned visual sampling disabled. Press `V` to enable it for the current run. |
 | `--scan-mode focused\|full` | DOM scan scope. Default: `focused`. |
 | `--poll-ms <n>` | Detector polling interval. Default: `500`. |
 | `--confirm <n>` | Consecutive samples required for a transition. Default: `2`. |
@@ -167,9 +238,19 @@ classify ads.
 ## Current limitations
 
 - Pluto can change its DOM at any time; focused and full scans are heuristic.
-- There is no visual ad classifier yet—only DOM/accessibility checks and saved
-  diagnostic crops.
+- Learned visual matching can false-positive or false-negative. It recognizes
+  trained recurring sequences rather than arbitrary concepts, and changed promos
+  may require retraining. DOM/accessibility detection remains authoritative when
+  a normal Pluto ad indicator appears.
+- Protected, cross-origin, or DRM-controlled media may prevent direct video-pixel
+  sampling and disable learned visual matching for that run.
+- Automatic visual sampling can cause occasional mild flashing or display
+  disturbance depending on Chrome, the GPU, and video composition. It is not
+  necessarily tied visibly to every sample. `V` or `--no-visual` disables that
+  sampling without disabling DOM detection.
 - YouTube videos can fail because embedding is disabled, the video is unavailable,
   or the IFrame API rejects the playback client. Those errors are logged.
 - Live/upcoming filtering depends on metadata exposed by YouTube's channel page.
 - Queue state is local, versioned, and intentionally limited to automatic mode.
+- Other streaming sites are experimental: source muting and tab switching may
+  work, but the built-in DOM detector profile is Pluto-specific.

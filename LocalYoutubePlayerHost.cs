@@ -190,6 +190,9 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                 <div>N = next video</div>
                 <div>P = pause/resume ad tracking</div>
                 <div>R = reload saved queue</div>
+                <div>T = teach source visual (source tab)</div>
+                <div>V = toggle automatic visual matching</div>
+                <div>X = force source / reset detector</div>
               </div>
               <script>
                 const candidates = {{candidatesJson}};
@@ -463,6 +466,12 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   } else if (event.code === 'KeyR') {
                     event.preventDefault();
                     void window.requestYoutubeQueueRestore?.();
+                  } else if (event.code === 'KeyX' && !event.defaultPrevented) {
+                    event.preventDefault();
+                    void window.requestDetectorReset?.();
+                  } else if (event.code === 'KeyV' && !event.defaultPrevented) {
+                    event.preventDefault();
+                    void window.requestVisualMatchingToggle?.();
                   }
                 });
                 window.addEventListener('message', event => {
@@ -470,6 +479,10 @@ internal sealed class LocalYoutubePlayerHost : IAsyncDisposable
                   else if (event.data === 'pluto-ad-detector:show-youtube-help') showKeyboardHelp();
                   else if (event.data === 'pluto-ad-detector:reload-youtube-queue')
                     void window.requestYoutubeQueueRestore?.();
+                  else if (event.data === 'pluto-ad-detector:force-source-reset')
+                    void window.requestDetectorReset?.();
+                  else if (event.data === 'pluto-ad-detector:toggle-visual-matching')
+                    void window.requestVisualMatchingToggle?.();
                 });
 
                 window.onYouTubeIframeAPIReady = () => {

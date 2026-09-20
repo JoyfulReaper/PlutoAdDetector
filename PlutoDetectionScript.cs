@@ -24,7 +24,14 @@ internal static class PlutoDetectionScript
             (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height))[0];
 
           if (!player) {
-            return JSON.stringify({ isAd: false, method: 'DOM', hasPlayer: false, x: 0, y: 0, width: 0, height: 0 });
+            const emptyBounds = { x: 0, y: 0, width: 0, height: 0 };
+            return JSON.stringify({
+              isAd: false,
+              method: 'DOM',
+              hasPlayer: false,
+              domDetectionRegion: emptyBounds,
+              playerBounds: emptyBounds
+            });
           }
 
           const p = player.rect;
@@ -124,10 +131,18 @@ internal static class PlutoDetectionScript
             isAd,
             method: 'DOM',
             hasPlayer: true,
-            x: Math.max(0, region.left),
-            y: Math.max(0, region.top),
-            width: Math.max(1, region.right - region.left),
-            height: Math.max(1, region.bottom - region.top)
+            domDetectionRegion: {
+              x: Math.max(0, region.left),
+              y: Math.max(0, region.top),
+              width: Math.max(1, region.right - region.left),
+              height: Math.max(1, region.bottom - region.top)
+            },
+            playerBounds: {
+              x: Math.max(0, Math.min(innerWidth, p.left)),
+              y: Math.max(0, Math.min(innerHeight, p.top)),
+              width: Math.max(0, Math.min(innerWidth, p.right) - Math.max(0, p.left)),
+              height: Math.max(0, Math.min(innerHeight, p.bottom) - Math.max(0, p.top))
+            }
           });
         }
         """;

@@ -75,7 +75,88 @@ Equal(YoutubeQueueRestoreStatus.Skipped, YoutubeQueueStateLoader.Load(
 Equal(false, YoutubeQueueRestoreAccess.CanReload(trackingPaused: false, youtubeForegrounded: false));
 Equal(true, YoutubeQueueRestoreAccess.CanReload(trackingPaused: true, youtubeForegrounded: false));
 Equal(true, YoutubeQueueRestoreAccess.CanReload(trackingPaused: false, youtubeForegrounded: true));
-Console.WriteLine("PASS: versioned queue schema, compatible restore, duration/integrity rejection, staleness, and single-video exclusion");
+
+var saverDirectory = Path.Combine(Path.GetTempPath(), $"pluto-queue-saver-{Guid.NewGuid():N}");
+Directory.CreateDirectory(saverDirectory);
+try
+{
+    var fallbackPath = Path.Combine(saverDirectory, "cached-fallback.json");
+    var fallbackCaptures = 0;
+    var fallbackSaver = new YoutubeQueueStateSaver(
+        () => ++fallbackCaptures == 1
+            ? Task.FromResult<YoutubeQueueBrowserState?>(browserState)
+            : Task.FromException<YoutubeQueueBrowserState?>(new InvalidOperationException("page closed")),
+        fallbackPath,
+        "https://www.youtube.com/@MeidasTouch",
+        300,
+        youtubeVideoId: null);
+    Equal(true, await fallbackSaver.RefreshSnapshotAsync());
+    await fallbackSaver.DisposeAsync();
+    Equal(2, fallbackCaptures);
+    var fallbackRestore = YoutubeQueueStateLoader.Load(
+        fallbackPath,
+        "https://www.youtube.com/@MeidasTouch",
+        300,
+        DateTimeOffset.UtcNow);
+    Equal(YoutubeQueueRestoreStatus.Succeeded, fallbackRestore.Status);
+    Equal(42.5, fallbackRestore.BrowserState?.CurrentVideo?.PlaybackPositionSeconds);
+
+    var freshPath = Path.Combine(saverDirectory, "fresh.json");
+    var freshState = browserState with
+    {
+        CurrentVideo = browserState.CurrentVideo! with { PlaybackPositionSeconds = 99.25 }
+    };
+    var freshCaptures = 0;
+    var freshSaver = new YoutubeQueueStateSaver(
+        () => Task.FromResult<YoutubeQueueBrowserState?>(++freshCaptures == 1 ? browserState : freshState),
+        freshPath,
+        "https://www.youtube.com/@MeidasTouch",
+        300,
+        youtubeVideoId: null);
+    Equal(true, await freshSaver.RefreshSnapshotAsync());
+    await freshSaver.DisposeAsync();
+    var freshRestore = YoutubeQueueStateLoader.Load(
+        freshPath,
+        "https://www.youtube.com/@MeidasTouch",
+        300,
+        DateTimeOffset.UtcNow);
+    Equal(99.25, freshRestore.BrowserState?.CurrentVideo?.PlaybackPositionSeconds);
+
+    var untouchedPath = Path.Combine(saverDirectory, "untouched.json");
+    const string originalContents = "previous valid save";
+    File.WriteAllText(untouchedPath, originalContents);
+    var unavailableSaver = new YoutubeQueueStateSaver(
+        () => Task.FromException<YoutubeQueueBrowserState?>(new InvalidOperationException("page closed")),
+        untouchedPath,
+        "https://www.youtube.com/@MeidasTouch",
+        300,
+        youtubeVideoId: null);
+    await unavailableSaver.DisposeAsync();
+    Equal(originalContents, File.ReadAllText(untouchedPath));
+
+    var singleVideoPath = Path.Combine(saverDirectory, "single-video.json");
+    var singleVideoCaptures = 0;
+    var singleVideoSaver = new YoutubeQueueStateSaver(
+        () =>
+        {
+            singleVideoCaptures++;
+            return Task.FromResult<YoutubeQueueBrowserState?>(browserState);
+        },
+        singleVideoPath,
+        "https://www.youtube.com/@MeidasTouch",
+        300,
+        youtubeVideoId: "AAAAAAAAAAA");
+    Equal(false, await singleVideoSaver.RefreshSnapshotAsync());
+    await singleVideoSaver.DisposeAsync();
+    Equal(0, singleVideoCaptures);
+    Equal(false, File.Exists(singleVideoPath));
+}
+finally
+{
+    Directory.Delete(saverDirectory, recursive: true);
+}
+
+Console.WriteLine("PASS: versioned queue schema, restore validation, cached shutdown fallback, fresh shutdown state, and single-video exclusion");
 
 static void Equal<T>(T expected, T actual)
 {

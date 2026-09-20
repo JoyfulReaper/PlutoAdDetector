@@ -55,6 +55,25 @@ finally
 static async Task RunAsync(DetectorOptions options, CancellationToken cancellationToken)
 {
     Directory.CreateDirectory(options.CaptureDirectory);
+    var visualSignaturePath = Path.GetFullPath(VisualSignatureStore.DefaultFileName);
+    var visualSignatureStore = new VisualSignatureStore(visualSignaturePath);
+    var visualSignatureLoad = visualSignatureStore.Load();
+    var learnedVisualSignatures = visualSignatureLoad.Signatures.ToList();
+    var visualDebugEnabled = string.Equals(
+        Environment.GetEnvironmentVariable("PLUTO_VISUAL_DEBUG"),
+        "1",
+        StringComparison.Ordinal);
+    var visualMatcher = new VisualSequenceMatcher(
+        learnedVisualSignatures,
+        visualDebugEnabled,
+        message => Console.Error.WriteLine(message));
+    foreach (var warning in visualSignatureLoad.Warnings)
+        Console.Error.WriteLine($"visual signatures: {warning}");
+    if (visualSignatureLoad.Signatures.Count > 0)
+        Console.Error.WriteLine($"visual signatures loaded: {visualSignatureLoad.Signatures.Count} from {visualSignaturePath}");
+    if (visualDebugEnabled)
+        Console.Error.WriteLine("visual debug diagnostics enabled by PLUTO_VISUAL_DEBUG=1");
+
     var browserProfileDirectory = Path.GetFullPath("browser-profile");
     Directory.CreateDirectory(browserProfileDirectory);
     var sourceUri = new Uri(options.SourceUrl);
@@ -122,14 +141,29 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     Console.Error.WriteLine($"browser profile: {browserProfileDirectory}");
 
     var trackingToggleRequests = 0;
+    var detectorResetRequests = 0;
+    var visualMatchingToggleRequests = 0;
     var queueRestoreRequests = 0;
+    var visualTrainingRequests = 0;
     await context.ExposeFunctionAsync("requestAdTrackingToggle", () =>
     {
         Interlocked.Increment(ref trackingToggleRequests);
     });
+    await context.ExposeFunctionAsync("requestDetectorReset", () =>
+    {
+        Interlocked.Increment(ref detectorResetRequests);
+    });
+    await context.ExposeFunctionAsync("requestVisualMatchingToggle", () =>
+    {
+        Interlocked.Increment(ref visualMatchingToggleRequests);
+    });
     await context.AddInitScriptAsync(script: AdTrackingShortcut.Script);
 
     var sourcePage = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
+    await sourcePage.ExposeFunctionAsync("requestVisualSignatureTraining", () =>
+    {
+        Interlocked.Increment(ref visualTrainingRequests);
+    });
     await sourcePage.GotoAsync(options.SourceUrl, new PageGotoOptions
     {
         WaitUntil = WaitUntilState.DOMContentLoaded,
@@ -163,6 +197,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
         options.ChannelUrl,
         options.MinimumDurationSeconds,
         options.YoutubeVideoId);
+    if (automaticQueueMode)
+        await youtubeQueueStateSaver.RefreshSnapshotAsync();
 
     bool? publishedState = null;
     bool? pendingState = null;
@@ -174,26 +210,277 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     var nextYoutubeHealthCheckAt = DateTimeOffset.MinValue;
     var queueRefreshPolicy = new YoutubeQueueRefreshPolicy(initialDiscoveryCompletedAt);
     var nextQueueDepthCheckAt = DateTimeOffset.UtcNow;
+    var nextQueueSnapshotAt = DateTimeOffset.UtcNow.Add(YoutubeQueueStateSaver.CacheRefreshInterval);
     Task<YoutubeDiscovery>? feedRefresh = null;
+    var feedDiscoveryGeneration = new YoutubeFeedDiscoveryGeneration();
+    long feedRefreshGeneration = 0;
     using var feedRefreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     var trackingPaused = false;
+    Task<VisualSignatureTrainingResult>? visualTraining = null;
+    CancellationTokenSource? visualTrainingCancellation = null;
+    long visualTrainingGeneration = 0;
+    Task<VisualFrameSample?>? visualRuntimeCapture = null;
+    long visualRuntimeCaptureGeneration = 0;
+    long visualRuntimeGeneration = 0;
+    long visualGeneration = 0;
+    var nextVisualRuntimeSampleAt = DateTimeOffset.UtcNow;
+    DetectionBounds? lastVisualRuntimeBounds = null;
+    string? loggedVisualRuntimeError = null;
+    var visualSamplingDisabled = false;
+    LearnedVisualMatch? pendingVisualMatch = null;
+    VisualBlockedState? visualBlockedState = null;
+    var recoveryBaseline = new DetectorRecoveryBaseline();
+    var visualMatchingEnabled = !options.NoVisual;
+    if (!visualMatchingEnabled)
+        Console.WriteLine("visual matching disabled");
 
     try
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (Interlocked.Exchange(ref detectorResetRequests, 0) > 0)
+            {
+                visualGeneration++;
+                visualTrainingCancellation?.Cancel();
+                Interlocked.Exchange(ref visualTrainingRequests, 0);
+                visualBlockedState = null;
+                publishedState = null;
+                pendingState = null;
+                pendingCount = 0;
+                VisualRuntimeState.ResetBoundary(
+                    visualMatcher,
+                    ref visualRuntimeGeneration,
+                    ref pendingVisualMatch);
+                youtubePlaybackExpected = false;
+                await PauseYoutubeAsync(youtubePage);
+                loggedYoutubeError = null;
+                await sourcePage.BringToFrontAsync();
+                await SetSourceMutedAsync(sourcePage, muted: false);
+                recoveryBaseline.Begin();
+                Console.WriteLine("manual reset: source restored");
+                Console.WriteLine("detector waiting for clean baseline");
+            }
+
+            var visualToggleCount = Interlocked.Exchange(ref visualMatchingToggleRequests, 0);
+            while (visualToggleCount-- > 0)
+            {
+                visualMatchingEnabled = !visualMatchingEnabled;
+                VisualRuntimeState.ResetBoundary(
+                    visualMatcher,
+                    ref visualRuntimeGeneration,
+                    ref pendingVisualMatch);
+                Console.WriteLine(visualMatchingEnabled
+                    ? "visual matching enabled"
+                    : "visual matching disabled");
+            }
+
+            if (visualRuntimeCapture?.IsCompleted is true)
+            {
+                var completedCaptureGeneration = visualRuntimeCaptureGeneration;
+                try
+                {
+                    var runtimeSample = await visualRuntimeCapture;
+                    if (!VisualRuntimeState.IsCaptureCurrent(
+                            completedCaptureGeneration,
+                            visualRuntimeGeneration) ||
+                        Volatile.Read(ref detectorResetRequests) > 0 ||
+                        Volatile.Read(ref visualMatchingToggleRequests) > 0)
+                    {
+                        // X or V invalidated this automatic sample while it was in flight.
+                    }
+                    else if (runtimeSample is null)
+                    {
+                        visualMatcher.ResetProgressions();
+                    }
+                    else
+                    {
+                        if (lastVisualRuntimeBounds is null)
+                        {
+                            Console.Error.WriteLine(
+                                $"visual runtime matching started: signatures={learnedVisualSignatures.Count} " +
+                                $"player={FormatBounds(runtimeSample.PlayerBounds)} " +
+                                $"normalized={VisualFrameSampler.NormalizedWidth}x{VisualFrameSampler.NormalizedHeight} " +
+                                $"interval={VisualSequenceMatcher.RuntimeSampleIntervalMilliseconds}ms " +
+                                $"sampleLatency={runtimeSample.SamplingMilliseconds:0.#}ms");
+                        }
+                        else if (visualDebugEnabled && lastVisualRuntimeBounds != runtimeSample.PlayerBounds)
+                        {
+                            Console.Error.WriteLine(
+                                $"visual debug: player bounds changed from {FormatBounds(lastVisualRuntimeBounds)} " +
+                                $"to {FormatBounds(runtimeSample.PlayerBounds)}");
+                        }
+
+                        lastVisualRuntimeBounds = runtimeSample.PlayerBounds;
+                        loggedVisualRuntimeError = null;
+                        foreach (var match in visualMatcher.AddSample(runtimeSample.Fingerprint, DateTimeOffset.UtcNow))
+                        {
+                            Console.WriteLine($"learned visual match: {match.SignatureName}");
+                            pendingVisualMatch ??= match;
+                        }
+                    }
+                }
+                catch (Exception) when (
+                    !VisualRuntimeState.IsCaptureCurrent(
+                        completedCaptureGeneration,
+                        visualRuntimeGeneration) ||
+                    Volatile.Read(ref detectorResetRequests) > 0 ||
+                    Volatile.Read(ref visualMatchingToggleRequests) > 0)
+                {
+                    // Failures from invalidated work are intentionally ignored.
+                }
+                catch (VisualSamplingUnsupportedException exception)
+                {
+                    visualMatcher.ResetProgressions();
+                    if (!visualSamplingDisabled)
+                        Console.Error.WriteLine($"learned visual sampling disabled for this run: {exception.Message}");
+                    visualSamplingDisabled = true;
+                }
+                catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                    visualMatcher.ResetProgressions();
+                    if (loggedVisualRuntimeError != exception.Message)
+                        Console.Error.WriteLine($"visual runtime sample failed: {exception.Message}");
+                    loggedVisualRuntimeError = exception.Message;
+                }
+                finally
+                {
+                    visualRuntimeCapture = null;
+                    nextVisualRuntimeSampleAt = DateTimeOffset.UtcNow.AddMilliseconds(
+                        VisualSequenceMatcher.RuntimeSampleIntervalMilliseconds);
+                }
+            }
+
+            if (visualTraining?.IsCompleted is true)
+            {
+                var completedTrainingGeneration = visualTrainingGeneration;
+                try
+                {
+                    var result = await visualTraining;
+                    if (completedTrainingGeneration != visualGeneration ||
+                        Volatile.Read(ref detectorResetRequests) > 0)
+                    {
+                        // X invalidated this training result before it could be saved.
+                    }
+                    else if (result.Signature is null)
+                    {
+                        if (string.Equals(
+                            result.Error,
+                            VisualSignatureTrainer.VideoElementChangedError,
+                            StringComparison.Ordinal))
+                        {
+                            Console.Error.WriteLine($"visual training aborted: {result.Error}");
+                        }
+                        else
+                        {
+                            Console.Error.WriteLine(
+                                $"visual training failed: {result.Error ?? "unknown error"} ({result.UsableSamples} usable samples)");
+                        }
+                    }
+                    else
+                    {
+                        learnedVisualSignatures.Add(result.Signature);
+                        var saveResult = visualSignatureStore.Save(learnedVisualSignatures);
+                        if (saveResult.Success)
+                        {
+                            visualMatcher.ReplaceSignatures(learnedVisualSignatures);
+                            lastVisualRuntimeBounds = null;
+                            Console.WriteLine($"visual training completed: {result.UsableSamples} usable samples");
+                            Console.WriteLine($"visual signature generated: {result.Signature.Name} [{result.Signature.Id}]");
+                        }
+                        else
+                        {
+                            learnedVisualSignatures.Remove(result.Signature);
+                            Console.Error.WriteLine($"visual training failed: could not save signature: {saveResult.Error}");
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (
+                    cancellationToken.IsCancellationRequested ||
+                    visualTrainingCancellation?.IsCancellationRequested is true)
+                {
+                }
+                catch (Exception) when (
+                    completedTrainingGeneration != visualGeneration ||
+                    Volatile.Read(ref detectorResetRequests) > 0)
+                {
+                    // Failures from invalidated work are intentionally ignored.
+                }
+                catch (VisualSamplingUnsupportedException exception)
+                {
+                    if (!visualSamplingDisabled)
+                        Console.Error.WriteLine($"learned visual sampling disabled for this run: {exception.Message}");
+                    visualSamplingDisabled = true;
+                }
+                catch (Exception exception)
+                {
+                    Console.Error.WriteLine($"visual training failed: {exception.Message}");
+                }
+                finally
+                {
+                    visualTraining = null;
+                    visualTrainingCancellation?.Dispose();
+                    visualTrainingCancellation = null;
+                }
+            }
+
+            if (Interlocked.Exchange(ref visualTrainingRequests, 0) > 0)
+            {
+                if (visualSamplingDisabled)
+                {
+                    Console.Error.WriteLine("visual training unavailable: direct video sampling is disabled for this run");
+                }
+                else if (visualTraining is not null)
+                {
+                    Console.Error.WriteLine("visual training already active; request ignored");
+                }
+                else
+                {
+                    Console.WriteLine(
+                        $"visual training started: {VisualSignatureTrainer.TrainingDurationMilliseconds / 1000.0:0.#} seconds at {VisualSignatureTrainer.SampleIntervalMilliseconds} ms intervals");
+                    visualTrainingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    visualTrainingGeneration = visualGeneration;
+                    visualTraining = VisualSignatureTrainer.TrainAsync(
+                        sourcePage,
+                        visualTrainingCancellation.Token);
+                }
+            }
+
+            if (learnedVisualSignatures.Count > 0 &&
+                !visualSamplingDisabled &&
+                visualMatchingEnabled &&
+                !trackingPaused &&
+                !recoveryBaseline.IsAwaiting &&
+                publishedState is not true &&
+                visualBlockedState is null &&
+                pendingVisualMatch is null &&
+                visualTraining is null &&
+                visualRuntimeCapture is null &&
+                DateTimeOffset.UtcNow >= nextVisualRuntimeSampleAt)
+            {
+                visualRuntimeCaptureGeneration = visualRuntimeGeneration;
+                visualRuntimeCapture = VisualFrameSampler.CaptureAsync(sourcePage);
+            }
+
             if (feedRefresh?.IsCompleted is true)
             {
                 try
                 {
                     var discovery = await feedRefresh;
-                    await youtubePage.EvaluateAsync("items => { window.youtubePlayerControls.refresh(items); }",
-                        discovery.Uploads.Select(item => new
-                        {
-                            id = item.Id,
-                            title = item.Title,
-                            automaticSkipReason = item.AutomaticSkipReason
-                        }).ToArray());
+                    if (!feedDiscoveryGeneration.IsCurrent(feedRefreshGeneration))
+                    {
+                        Console.Error.WriteLine(
+                            "youtube discovery refresh discarded: queue was manually restored");
+                    }
+                    else
+                    {
+                        await youtubePage.EvaluateAsync("items => { window.youtubePlayerControls.refresh(items); }",
+                            discovery.Uploads.Select(item => new
+                            {
+                                id = item.Id,
+                                title = item.Title,
+                                automaticSkipReason = item.AutomaticSkipReason
+                            }).ToArray());
+                    }
                 }
                 catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
@@ -204,6 +491,12 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                     feedRefresh = null;
                     queueRefreshPolicy.RecordAttemptCompleted(DateTimeOffset.UtcNow);
                 }
+            }
+
+            if (automaticQueueMode && DateTimeOffset.UtcNow >= nextQueueSnapshotAt)
+            {
+                await youtubeQueueStateSaver.RefreshSnapshotAsync();
+                nextQueueSnapshotAt = DateTimeOffset.UtcNow.Add(YoutubeQueueStateSaver.CacheRefreshInterval);
             }
 
             var refreshCheckTime = DateTimeOffset.UtcNow;
@@ -222,6 +515,7 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                         Console.Error.WriteLine(
                             $"youtube discovery refresh triggered: automatic queue has {queueStatus.RemainingVideos} remaining videos (threshold: {YoutubeQueueRefreshPolicy.RemainingVideoThreshold})");
                         // Fetch asynchronously so slow RSS requests never block ad detection.
+                        feedRefreshGeneration = feedDiscoveryGeneration.Capture();
                         feedRefresh = YoutubeFeed.FetchAsync(options.ChannelUrl, feedRefreshCancellation.Token);
                     }
                 }
@@ -238,9 +532,14 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 publishedState = null;
                 pendingState = null;
                 pendingCount = 0;
+                VisualRuntimeState.ResetBoundary(
+                    visualMatcher,
+                    ref visualRuntimeGeneration,
+                    ref pendingVisualMatch);
 
                 if (trackingPaused)
                 {
+                    visualBlockedState = null;
                     youtubePlaybackExpected = false;
                     await PauseYoutubeAsync(youtubePage);
                     loggedYoutubeError = null;
@@ -251,6 +550,34 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 else
                 {
                     Console.WriteLine("ad tracking resumed");
+                }
+            }
+
+            if (pendingVisualMatch is not null &&
+                visualMatchingEnabled &&
+                !recoveryBaseline.IsAwaiting &&
+                Volatile.Read(ref trackingToggleRequests) == 0 &&
+                Volatile.Read(ref detectorResetRequests) == 0 &&
+                Volatile.Read(ref visualMatchingToggleRequests) == 0)
+            {
+                var match = pendingVisualMatch;
+                pendingVisualMatch = null;
+                var start = VisualBlockPolicy.TryStart(
+                    visualBlockedState,
+                    match,
+                    DateTimeOffset.UtcNow,
+                    trackingPaused,
+                    publishedState is true);
+                if (start.Started)
+                {
+                    visualBlockedState = start.State;
+                    await SetSourceMutedAsync(sourcePage, muted: true);
+                    await youtubePage.BringToFrontAsync();
+                    youtubePlaybackExpected = true;
+                    await ResumeYoutubeAsync(youtubePage);
+                    loggedYoutubeError = null;
+                    nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow;
+                    Console.WriteLine($"blocked segment started [VISUAL:{match.SignatureName}]");
                 }
             }
 
@@ -283,7 +610,11 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                             {
                                 var applyResult = await ApplyYoutubeQueueRestoreAsync(youtubePage, restoreResult.BrowserState);
                                 if (applyResult.Success)
+                                {
+                                    feedDiscoveryGeneration.RecordSuccessfulQueueRestore();
+                                    youtubeQueueStateSaver.CacheSnapshot(restoreResult.BrowserState);
                                     LogYoutubeQueueRestoreResult(restoreResult);
+                                }
                                 else
                                     Console.Error.WriteLine($"youtube queue restore failed: {applyResult.Error ?? "Unknown player error."}");
                             }
@@ -303,11 +634,27 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
             var sample = await DetectAsync(sourcePage, options.ScanMode);
             // If P was pressed while detection was running, normalize tracking before
             // this sample can trigger a switch. A resumed loop will take a new sample.
-            if (Volatile.Read(ref trackingToggleRequests) > 0)
+            if (Volatile.Read(ref trackingToggleRequests) > 0 ||
+                Volatile.Read(ref detectorResetRequests) > 0)
                 continue;
 
             if (trackingPaused)
             {
+                await Task.Delay(options.PollInterval, cancellationToken);
+                continue;
+            }
+
+            if (recoveryBaseline.IsAwaiting)
+            {
+                visualMatcher.ResetProgressions();
+                if (recoveryBaseline.Observe(sample.IsAd, options.ConfirmationSamples))
+                {
+                    publishedState = null;
+                    pendingState = null;
+                    pendingCount = 0;
+                    Console.WriteLine("detector re-armed");
+                }
+
                 await Task.Delay(options.PollInterval, cancellationToken);
                 continue;
             }
@@ -329,17 +676,30 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 // A non-ad page load is baseline state, not an "ad ended" transition.
                 if (sample.IsAd)
                 {
-                    await SetSourceMutedAsync(sourcePage, muted: true);
-                    await youtubePage.BringToFrontAsync();
-                    youtubePlaybackExpected = true;
-                    await ResumeYoutubeAsync(youtubePage);
-                    loggedYoutubeError = null;
-                    nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow;
+                    VisualRuntimeState.ResetBoundary(
+                        visualMatcher,
+                        ref visualRuntimeGeneration,
+                        ref pendingVisualMatch);
+                    var requiresDomStartSwitch = VisualBlockPolicy.RequiresSwitchForDomStart(visualBlockedState);
+                    visualBlockedState = null;
+                    if (requiresDomStartSwitch)
+                    {
+                        await SetSourceMutedAsync(sourcePage, muted: true);
+                        await youtubePage.BringToFrontAsync();
+                        youtubePlaybackExpected = true;
+                        await ResumeYoutubeAsync(youtubePage);
+                        loggedYoutubeError = null;
+                        nextYoutubeHealthCheckAt = DateTimeOffset.UtcNow;
+                    }
                     Console.WriteLine($"ad started [{sample.Method}]");
                     publishedState = true;
                 }
                 else if (publishedState is true)
                 {
+                    VisualRuntimeState.ResetBoundary(
+                        visualMatcher,
+                        ref visualRuntimeGeneration,
+                        ref pendingVisualMatch);
                     youtubePlaybackExpected = false;
                     await PauseYoutubeAsync(youtubePage);
                     loggedYoutubeError = null;
@@ -348,6 +708,22 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                     Console.WriteLine($"ad ended [{sample.Method}]");
                     publishedState = false;
                 }
+            }
+
+            if (VisualBlockPolicy.ShouldTimeout(
+                visualBlockedState,
+                publishedState is true,
+                DateTimeOffset.UtcNow))
+            {
+                visualBlockedState = null;
+                youtubePlaybackExpected = false;
+                await PauseYoutubeAsync(youtubePage);
+                loggedYoutubeError = null;
+                await sourcePage.BringToFrontAsync();
+                await SetSourceMutedAsync(sourcePage, muted: false);
+                pendingState = null;
+                pendingCount = 0;
+                Console.WriteLine("blocked segment ended [VISUAL:timeout]");
             }
 
             if (!everFoundSemanticIndicator &&
@@ -377,6 +753,36 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
     finally
     {
         await feedRefreshCancellation.CancelAsync();
+        visualTrainingCancellation?.Cancel();
+        if (visualTraining is not null)
+        {
+            try
+            {
+                await visualTraining;
+            }
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested ||
+                visualTrainingCancellation?.IsCancellationRequested is true)
+            {
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"visual training cleanup failed: {exception.Message}");
+            }
+        }
+        visualTrainingCancellation?.Dispose();
+        visualTrainingCancellation = null;
+        if (visualRuntimeCapture is not null)
+        {
+            try
+            {
+                await visualRuntimeCapture;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"visual runtime cleanup failed: {exception.Message}");
+            }
+        }
         if (feedRefresh is not null)
         {
             try
@@ -411,6 +817,9 @@ static async Task<YoutubeQueueRefreshStatus> GetYoutubeQueueRefreshStatusAsync(I
     return JsonSerializer.Deserialize<YoutubeQueueRefreshStatus>(json, JsonOptions.Instance)
         ?? throw new InvalidOperationException("Local YouTube queue returned no refresh status.");
 }
+
+static string FormatBounds(DetectionBounds bounds) =>
+    $"({bounds.X:0.#},{bounds.Y:0.#}) {bounds.Width:0.#}x{bounds.Height:0.#}";
 
 static async Task<YoutubeControlResult> ApplyYoutubeQueueRestoreAsync(
     IPage page,
@@ -514,13 +923,14 @@ static async Task<DetectionSample> DetectAsync(IPage page, PlutoScanMode scanMod
     var mode = scanMode == PlutoScanMode.Full ? "full" : "focused";
     var json = await page.EvaluateAsync<string>(PlutoDetectionScript.Script, mode);
     return JsonSerializer.Deserialize<DetectionSample>(json, JsonOptions.Instance)
-        ?? new DetectionSample(false, "DOM", false, 0, 0, 0, 0);
+        ?? new DetectionSample(false, "DOM", false, DetectionBounds.Empty, DetectionBounds.Empty);
 }
 
 static async Task SaveDiagnosticCropAsync(IPage page, DetectionSample sample, string captureDirectory)
 {
     try
     {
+        var region = sample.DomDetectionRegion;
         var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
         var path = Path.Combine(captureDirectory, $"player-upper-left-{timestamp}.png");
         await page.ScreenshotAsync(new PageScreenshotOptions
@@ -528,10 +938,10 @@ static async Task SaveDiagnosticCropAsync(IPage page, DetectionSample sample, st
             Path = path,
             Clip = new Clip
             {
-                X = sample.X,
-                Y = sample.Y,
-                Width = sample.Width,
-                Height = sample.Height
+                X = region.X,
+                Y = region.Y,
+                Width = region.Width,
+                Height = region.Height
             }
         });
     }
@@ -545,10 +955,13 @@ internal sealed record DetectionSample(
     bool IsAd,
     string Method,
     bool HasPlayer,
-    float X,
-    float Y,
-    float Width,
-    float Height);
+    DetectionBounds DomDetectionRegion,
+    DetectionBounds PlayerBounds);
+
+internal sealed record DetectionBounds(float X, float Y, float Width, float Height)
+{
+    internal static readonly DetectionBounds Empty = new(0, 0, 0, 0);
+}
 
 internal sealed record YoutubeControlResult(bool Success, string? Error);
 
