@@ -236,10 +236,11 @@ switching remain available for experimentation, but the detector profile is
 Pluto-specific. A non-Pluto URL produces a warning; this project does not claim
 automatic compatibility with other services.
 
-Until a semantic ad indicator has been observed, the app periodically saves the
-largest player's upper-left crop under `captures/`. These images are diagnostics
-for DOM-detector troubleshooting. They are not used by learned visual matching,
-which samples decoded `<video>` frames directly.
+Diagnostic captures are disabled by default. Only when `--captures <directory>`
+is explicitly supplied does the app periodically save the largest player's
+upper-left crop in that directory, until a semantic ad indicator has been observed.
+These images are diagnostics for DOM-detector troubleshooting. They are not used
+by learned visual matching, which samples decoded `<video>` frames directly.
 
 ## CLI options
 
@@ -255,8 +256,8 @@ which samples decoded `<video>` frames directly.
 | `--scan-mode focused\|full` | DOM scan scope. Default: `focused`. |
 | `--poll-ms <n>` | Detector polling interval. Default: `500`. |
 | `--confirm <n>` | Consecutive samples required for a transition. Default: `2`. |
-| `--captures <directory>` | Diagnostic crop directory. Default: `captures`. |
-| `--capture-seconds <n>` | Seconds between diagnostic crops. Default: `30`. |
+| `--captures <directory>` | Enable diagnostic crops in this directory. Disabled by default. |
+| `--capture-seconds <n>` | Seconds between diagnostic crops when enabled. Default: `30`. Does not enable captures by itself. |
 | `--help`, `-h` | Print CLI help. |
 
 ## Current limitations

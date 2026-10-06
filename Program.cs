@@ -54,7 +54,11 @@ finally
 
 static async Task RunAsync(DetectorOptions options, CancellationToken cancellationToken)
 {
-    Directory.CreateDirectory(options.CaptureDirectory);
+    if (options.CaptureDirectory is { } captureDirectory)
+    {
+        Directory.CreateDirectory(captureDirectory);
+        Console.Error.WriteLine($"diagnostic captures enabled: {captureDirectory} (every {options.CaptureInterval.TotalSeconds.ToString(CultureInfo.InvariantCulture)} seconds)");
+    }
     var visualSignaturePath = Path.GetFullPath(VisualSignatureStore.DefaultFileName);
     var visualSignatureStore = new VisualSignatureStore(visualSignaturePath);
     var visualSignatureLoad = visualSignatureStore.Load();
@@ -726,7 +730,8 @@ static async Task RunAsync(DetectorOptions options, CancellationToken cancellati
                 Console.WriteLine("blocked segment ended [VISUAL:timeout]");
             }
 
-            if (!everFoundSemanticIndicator &&
+            if (options.CaptureDirectory is not null &&
+                !everFoundSemanticIndicator &&
                 !sample.IsAd &&
                 sample.HasPlayer &&
                 DateTimeOffset.UtcNow >= nextCaptureAt)

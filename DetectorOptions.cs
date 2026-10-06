@@ -14,7 +14,7 @@ internal sealed record DetectorOptions(
     bool Headless,
     TimeSpan PollInterval,
     int ConfirmationSamples,
-    string CaptureDirectory,
+    string? CaptureDirectory,
     TimeSpan CaptureInterval,
     PlutoScanMode ScanMode,
     bool Resume,
@@ -35,8 +35,8 @@ internal sealed record DetectorOptions(
           --scan-mode focused|full  DOM scan scope (default: focused; full scans the visible viewport)
           --resume                   Restore automatic queue state from youtube-queue.json
           --no-visual                Start with automatic learned visual matching disabled
-          --captures <directory>     Visual fallback directory (default: captures)
-          --capture-seconds <count>  Seconds between fallback crops (default: 30)
+          --captures <directory>     Enable diagnostic captures in this directory (disabled by default)
+          --capture-seconds <count>  Seconds between diagnostic crops when enabled (default: 30)
           --help                     Show this help on standard error
         """;
 
@@ -50,7 +50,7 @@ internal sealed record DetectorOptions(
         var headless = false;
         var pollMilliseconds = 500;
         var confirmationSamples = 2;
-        var captureDirectory = Path.GetFullPath("captures");
+        string? captureDirectory = null;
         var captureSeconds = 30;
         var scanMode = PlutoScanMode.Focused;
         var resume = false;
