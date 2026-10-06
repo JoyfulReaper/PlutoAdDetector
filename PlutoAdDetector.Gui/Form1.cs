@@ -15,7 +15,9 @@ public partial class Form1 : Form
     private static readonly string SettingsPath =
         Path.Combine(SettingsDirectory, "settings.json");
 
-    private sealed record GuiSettings(string? ChannelUrl);
+    private sealed record GuiSettings(
+        string? ChannelUrl,
+        bool? Resume);
 
     private readonly TextBox _sourceUrl = new()
     {
@@ -79,6 +81,7 @@ public partial class Form1 : Form
     private readonly CheckBox _resume = new()
     {
         AutoSize = true,
+        Checked = true,
         Text = "Resume previous YouTube queue"
     };
 
@@ -129,7 +132,11 @@ public partial class Form1 : Form
         _startButton.Click += (_, _) => StartDetector();
         _stopButton.Click += (_, _) => StopDetector();
 
-        FormClosing += (_, _) => StopDetector();
+        FormClosing += (_, _) =>
+        {
+            SaveSettings();
+            StopDetector();
+        };
 
         _helpButton.Click += (_, _) => ShowHelp();
 
@@ -143,12 +150,12 @@ public partial class Form1 : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(12),
             ColumnCount = 1,
-            RowCount = 8
+            RowCount = 9
         };
 
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        for (var i = 0; i < 7; i++)
+        for (var i = 0; i < 8; i++)
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -269,6 +276,14 @@ public partial class Form1 : Form
         root.Controls.Add(new Label
         {
             AutoSize = true,
+            Margin = new Padding(0, 8, 0, 8),
+            ForeColor = SystemColors.GrayText,
+            Text = "For full-screen video, use your browser's full-screen mode (for example, F11 in Chrome)."
+        });
+
+        root.Controls.Add(new Label
+        {
+            AutoSize = true,
             Text = "Detector output"
         });
 
@@ -308,9 +323,6 @@ public partial class Form1 : Form
         _resume.Enabled = _channelMode.Checked;
 
         _singleVideoUrl.Enabled = _singleVideoMode.Checked;
-
-        if (_singleVideoMode.Checked)
-            _resume.Checked = false;
     }
 
     private void StartDetector()
@@ -614,6 +626,8 @@ public partial class Form1 : Form
 
             if (!string.IsNullOrWhiteSpace(settings?.ChannelUrl))
                 _channelUrl.Text = settings.ChannelUrl;
+
+            _resume.Checked = settings?.Resume ?? true;
         }
         catch (Exception exception)
         {
@@ -630,7 +644,8 @@ public partial class Form1 : Form
             var settings = new GuiSettings(
                 string.IsNullOrWhiteSpace(_channelUrl.Text)
                     ? null
-                    : _channelUrl.Text.Trim());
+                    : _channelUrl.Text.Trim(),
+                _resume.Checked);
 
             var json = JsonSerializer.Serialize(
                 settings,
