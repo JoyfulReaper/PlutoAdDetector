@@ -8,9 +8,11 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
-  <ItemGroup>
-    <Compile Remove="tests/**/*.cs" />
-    <PackageReference Include="Microsoft.Playwright" Version="1.62.0" />
-  </ItemGroup>
+	<ItemGroup>
+		<Compile Remove="tests/**/*.cs" />
+		<Compile Remove="PlutoAdDetector.Gui/**/*.cs" />
+
+		<PackageReference Include="Microsoft.Playwright" Version="1.62.0" />
+	</ItemGroup>
 
 </Project>

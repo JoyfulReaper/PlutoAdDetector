@@ -19,6 +19,30 @@ ad tracking paused
 ad tracking resumed
 ```
 
+## Download — Windows GUI
+
+For normal Windows use, download the latest `PlutoAdDetector-*-win-x64.zip`
+from the GitHub Releases page.
+
+1. Extract the ZIP to a folder.
+2. Make sure Google Chrome is installed.
+3. Run `PlutoAdDetector.Gui.exe`.
+4. Choose the streaming service URL and YouTube source, then click **Start**.
+
+The GUI includes the detector and the .NET runtime; installing the .NET SDK is
+not required.
+
+The default **Pluto** detection mode is optimized for Pluto TV. **Try Another
+Service / Pluto Broke** uses the broader full-page detector and may use more CPU.
+
+Use **Help / Keys** in the GUI for runtime keyboard shortcuts, including visual
+signature training with `T`.
+
+> PlutoAdDetector is experimental proof-of-concept software. The Windows build
+> is currently unsigned, so Windows may display an unknown-publisher warning.
+
+## Build from source
+
 ## Run it
 
 Requirements: .NET 10 and either installed Google Chrome or Playwright Chromium.
