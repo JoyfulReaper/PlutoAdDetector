@@ -7,6 +7,7 @@ for (const url of [video, 'https://youtu.be/M7lc1UVf-VE?t=10', 'https://www.yout
   assert.equal(run(['--youtube-url', url, '--help']).status, 0);
 }
 assert.equal(run(['--help']).status, 0);
+assert.match(run(['--help']).stderr, /--captures <directory>.*disabled by default/);
 assert.match(run(['--help']).stderr, /--scan-mode focused\|full/);
 assert.equal(run(['--scan-mode', 'focused', '--help']).status, 0);
 assert.equal(run(['--scan-mode', 'full', '--help']).status, 0);
