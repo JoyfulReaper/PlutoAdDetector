@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="PlutoAdDetector.csproj" />
+  <Project Path="PlutoAdDetector.Gui/PlutoAdDetector.Gui.csproj" />
+</Solution>
